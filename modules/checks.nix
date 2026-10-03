@@ -102,6 +102,177 @@
           };
       };
     });
+    # Every key the older plugin accepted, set to a non-default value.
+    legacyAllOps = {
+      enabled = true;
+      ingestSecret = "test-only";
+      subdomain = "desk";
+      auth = {
+        enabled = true;
+        publicPaths = ["^/api/incidents$"];
+      };
+      ingress = ["local" "tailscale"];
+      customDomains = ["desk.example.org"];
+      admin = {
+        enabled = true;
+        path = "/console";
+        auth = false;
+        readOnly = true;
+      };
+      appdata = "/srv/legacy-ops";
+      redactExtraSlugsFile = "/srv/legacy-top.env";
+      githubToken = "test-only";
+      siteUrl = "https://desk.example.org";
+      targetAllowlist = "example-upstream/*";
+      targets = [
+        {
+          upstream = "example-upstream/neo";
+          fork = "example-bot/neo";
+        }
+        {
+          upstream = "example-upstream/example.neo";
+          fork = "example-bot/example.neo";
+          baseRef = "main";
+          flakeInput = "plugin1";
+          lab = "none";
+          flakeUrl = "github:example-bot/example.neo/{branch}";
+          units = ["docker-example*"];
+          paths = ["nix/services/example"];
+          keywords = ["example"];
+          protectedPaths = ["nix/services/example/core"];
+        }
+      ];
+      autofix = {
+        enable = true;
+        triage = {
+          enable = true;
+          autoEnqueue = true;
+        };
+        fix.enable = true;
+        maxAttempts = 4;
+        labSharesOpsHost = false;
+        denyPaths = ["nix/services/ops" "nix/modules/core"];
+        basePaths = ["nix/modules/core/base"];
+        neoBaseRef = "dev";
+        hermesTimeoutSec = 1234;
+        extraPackages = [pkgs.hello];
+        redactExtraSlugsFile = "/srv/legacy-af.env";
+        lab = {
+          enable = true;
+          flake = "/srv/config";
+          nixosConfiguration = "labhost";
+          input = "neoinput";
+          flakeUrl = "github:example-bot/neo/{branch}?dir=x";
+          opsHealth = "container:ops:3000/healthz";
+          hermesUnit = "hermes-test.service";
+          lockWaitSec = 11;
+          buildTimeoutSec = 12;
+          activateTimeoutSec = 13;
+          settleSec = 14;
+          checkTimeoutSec = 15;
+          planTimeoutSec = 16;
+          protectedWatchdogSec = 170;
+        };
+        pr = {
+          enable = true;
+          pollMinutes = 4;
+          reviewerLogin = "example-upstream";
+          reviewerId = 12345678;
+          botLogin = "example-bot";
+          maxRounds = 5;
+          stopPhrase = "/desk stop";
+          draft = true;
+        };
+      };
+    };
+    withSwag = lib.recursiveUpdate base {
+      services.swag = {
+        enabled = true;
+        email = "ops@example.org";
+      };
+    };
+    legacyAll = mkHost (lib.recursiveUpdate withSwag {services.ops = legacyAllOps;});
+    la = legacyAll.config.neo.services.autofix;
+    laT = la.targets;
+    laNeo = builtins.head laT;
+    laPlug = builtins.elemAt laT 1;
+    laW = legacyAll.config.warnings;
+    # Per-key expectations: [old key, value in neo.services.autofix, expected].
+    legacyKeys = let
+      o = legacyAllOps;
+      oa = o.autofix;
+      ol = oa.lab;
+      op = oa.pr;
+      ot = builtins.elemAt o.targets 1;
+    in [
+      ["enabled" la.enabled true]
+      ["ingestSecret" la.ingestSecret o.ingestSecret]
+      ["subdomain" la.subdomain o.subdomain]
+      ["auth.enabled" la.auth.enabled true]
+      ["auth.publicPaths" la.auth.publicPaths o.auth.publicPaths]
+      ["ingress" la.ingress o.ingress]
+      ["customDomains" la.customDomains o.customDomains]
+      ["admin.enabled" la.admin.enabled true]
+      ["admin.path" la.admin.path o.admin.path]
+      ["admin.auth" la.admin.auth false]
+      ["admin.readOnly" la.admin.readOnly true]
+      ["appdata" la.appdata o.appdata]
+      ["autofix.redactExtraSlugsFile (wins over top level)" la.redact.termsFile oa.redactExtraSlugsFile]
+      ["autofix.enable" la.autofix.enable true]
+      ["autofix.triage.enable" la.autofix.triage.enable true]
+      ["autofix.triage.autoEnqueue" la.autofix.triage.autoEnqueue true]
+      ["autofix.fix.enable" la.autofix.fix.enable true]
+      ["autofix.maxAttempts" la.autofix.maxAttempts oa.maxAttempts]
+      ["autofix.labSharesOpsHost" la.autofix.labSharesOpsHost false]
+      ["autofix.hermesTimeoutSec" la.autofix.hermesTimeoutSec oa.hermesTimeoutSec]
+      ["autofix.extraPackages" (map (p: p.name) la.autofix.extraPackages) [pkgs.hello.name]]
+      ["autofix.neoBaseRef → neo target baseRef" laNeo.baseRef oa.neoBaseRef]
+      ["autofix.denyPaths → neo target protectedPaths" laNeo.protectedPaths oa.denyPaths]
+      ["autofix.basePaths → neo target basePaths" laNeo.basePaths oa.basePaths]
+      ["autofix.lab.input → neo target flakeInput" laNeo.flakeInput ol.input]
+      ["autofix.lab.flakeUrl → neo target flakeUrl" laNeo.flakeUrl ol.flakeUrl]
+      ["autofix.lab.enable" la.autofix.lab.enable true]
+      ["autofix.lab.flake" la.autofix.lab.flake ol.flake]
+      ["autofix.lab.nixosConfiguration" la.autofix.lab.nixosConfiguration ol.nixosConfiguration]
+      ["autofix.lab.opsHealth (container renamed)" la.autofix.lab.opsHealth "container:autofix:3000/healthz"]
+      ["autofix.lab.hermesUnit" la.autofix.lab.hermesUnit ol.hermesUnit]
+      ["autofix.lab.lockWaitSec" la.autofix.lab.lockWaitSec ol.lockWaitSec]
+      ["autofix.lab.buildTimeoutSec" la.autofix.lab.buildTimeoutSec ol.buildTimeoutSec]
+      ["autofix.lab.activateTimeoutSec" la.autofix.lab.activateTimeoutSec ol.activateTimeoutSec]
+      ["autofix.lab.settleSec" la.autofix.lab.settleSec ol.settleSec]
+      ["autofix.lab.checkTimeoutSec" la.autofix.lab.checkTimeoutSec ol.checkTimeoutSec]
+      ["autofix.lab.planTimeoutSec" la.autofix.lab.planTimeoutSec ol.planTimeoutSec]
+      ["autofix.lab.protectedWatchdogSec" la.autofix.lab.protectedWatchdogSec ol.protectedWatchdogSec]
+      ["autofix.pr.enable" la.autofix.pr.enable true]
+      ["autofix.pr.pollMinutes" la.autofix.pr.pollMinutes op.pollMinutes]
+      ["autofix.pr.reviewerLogin → reviewers" la.autofix.pr.reviewers [op.reviewerLogin]]
+      ["autofix.pr.reviewerId → pinnedReviewerIds" la.autofix.pr.pinnedReviewerIds {${op.reviewerLogin} = op.reviewerId;}]
+      ["autofix.pr.botLogin" la.autofix.pr.botLogin op.botLogin]
+      ["autofix.pr.maxRounds" la.autofix.pr.maxRounds op.maxRounds]
+      ["autofix.pr.stopPhrase" la.autofix.pr.stopPhrase op.stopPhrase]
+      ["autofix.pr.draft" la.autofix.pr.draft true]
+      ["targets[].upstream" laPlug.upstream ot.upstream]
+      ["targets[].fork" laPlug.fork ot.fork]
+      ["targets[].baseRef" laPlug.baseRef ot.baseRef]
+      ["targets[].flakeInput" laPlug.flakeInput ot.flakeInput]
+      ["targets[].lab" laPlug.lab ot.lab]
+      ["targets[].flakeUrl" laPlug.flakeUrl ot.flakeUrl]
+      ["targets[].units" laPlug.units ot.units]
+      ["targets[].paths" laPlug.paths ot.paths]
+      ["targets[].keywords" laPlug.keywords ot.keywords]
+      ["targets[].protectedPaths" laPlug.protectedPaths ot.protectedPaths]
+    ];
+    # Stage-1 stopgap: customDomains under both [services.ops] and
+    # [services.autofix] — one value, one swag entry.
+    both = mkHost (lib.recursiveUpdate withSwag {
+      services.ops = {
+        enabled = true;
+        ingestSecret = "test-only";
+        customDomains = ["ops.example.org"];
+      };
+      services.autofix.customDomains = ["ops.example.org"];
+    });
+    swagExtra = n: lib.splitString "," (n.config.virtualisation.oci-containers.containers.swag.environment.EXTRA_DOMAINS or "");
     off = mkHost base;
     bad = settings: mkHost (lib.recursiveUpdate base settings);
     failed = n: lib.filter (a: !a.assertion) n.config.assertions;
@@ -138,6 +309,14 @@
       ["on: token activation" (oc.system.activationScripts ? neo-autofix-token)]
       ["on: polkit rule" (lib.hasInfix "neo-autofix-labtest@lab-" oc.security.polkit.extraConfig)]
       ["on: ops stub disabled" (oc.neo.services.ops.enabled == false)]
+      [
+        "on: worker-env.json = unit env, unquoted"
+        (let
+          j = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile oc.environment.etc."neo-autofix/worker-env.json".source));
+        in
+          j.OPS_AUTOFIX_PR == "1" && j.OPS_REDACT_PATTERNS == "ZZ[0-9]{8}" && j.OPS_DATA_DIR == "/var/neo/DATA/AppData/autofix" && j.OPS_PR_REVIEWERS == "example-upstream" && !(lib.any (k: lib.hasInfix "TOKEN=" k) (lib.attrNames j)))
+      ]
+      ["on: neo-autofix-check installed" (lib.any (p: (p.name or "") == "neo-autofix-check") oc.environment.systemPackages)]
       ["on: no legacy warning" (!(lib.any (w: lib.hasInfix "[services.ops]" w) oc.warnings))]
       # --- legacy alias
       ["legacy: no failed assertions" (failed legacy == [])]
@@ -166,10 +345,53 @@
         in
           n.config.neo.services.autofix.subdomain == "desk" && n.config.neo.services.autofix.enabled)
       ]
+      # --- legacy alias: every key of the older plugin
+      ["legacyAll: no failed assertions" (failed legacyAll == [])]
+      ["legacyAll: ignored keys warned" (lib.any (w: lib.hasInfix "ignored keys githubToken, siteUrl, targetAllowlist" w) laW)]
+      ["legacyAll: no unknown-key warning" (!(lib.any (w: lib.hasInfix "unknown keys" w) laW))]
+      ["legacyAll: data dir from appdata" (lib.elem "/srv/legacy-ops:/data" legacyAll.config.virtualisation.oci-containers.containers.autofix.volumes)]
+      ["legacyAll: custom domain on the cert" (lib.elem "desk.example.org" (swagExtra legacyAll))]
+      [
+        "legacy: top-level redactExtraSlugsFile"
+        ((bad {
+            services.ops = {
+              enabled = true;
+              redactExtraSlugsFile = "/srv/top.env";
+            };
+          })
+          .config
+          .neo
+          .services
+          .autofix
+          .redact
+          .termsFile
+          == "/srv/top.env")
+      ]
+      [
+        "legacy: unknown keys warned"
+        (let
+          w =
+            (bad {
+              services.ops = {
+                enabled = true;
+                bogus = 1;
+                autofix.bogusToo = true;
+                autofix.pr.reviewer = "x";
+              };
+            })
+            .config
+            .warnings;
+        in
+          lib.any (x: lib.hasInfix "unknown keys bogus, autofix.bogusToo, autofix.pr.reviewer" x) w)
+      ]
+      ["both customDomains: no failed assertions" (failed both == [])]
+      ["both customDomains: one value" (both.config.neo.services.autofix.customDomains == ["ops.example.org"])]
+      ["both customDomains: one swag entry" (lib.count (d: d == "ops.example.org") (swagExtra both) == 1)]
       # --- off
       ["off: no container" (!(off.config.virtualisation.oci-containers.containers ? autofix))]
       ["off: no worker" (!(off.config.systemd.services ? neo-autofix-worker))]
       ["off: no token unit" (!(off.config.systemd.services ? neo-autofix-token))]
+      ["off: no worker-env.json" (!(off.config.environment.etc ? "neo-autofix/worker-env.json"))]
       ["off: no failed assertions" (failed off == [])]
       # --- assertions
       [
@@ -209,7 +431,9 @@
           != [])
       ]
     ];
-    badExpect = lib.filter (e: !(builtins.elemAt e 1)) expect;
+    keyExpect = map (k: ["legacy key ${builtins.elemAt k 0}" (builtins.elemAt k 1 == builtins.elemAt k 2)]) legacyKeys;
+    allExpect = expect ++ keyExpect;
+    badExpect = lib.filter (e: !(builtins.elemAt e 1)) allExpect;
     tokenPkgs = import ../scripts/token/package.nix {
       inherit pkgs lib;
       forkOwner = "example-bot";
@@ -219,7 +443,7 @@
     checks = {
       eval =
         if badExpect == []
-        then pkgs.runCommand "autofix-eval-tests" {} "echo ${toString (builtins.length expect)} expectations ok > $out"
+        then pkgs.runCommand "autofix-eval-tests" {} "echo ${toString (builtins.length allExpect)} expectations ok > $out"
         else throw "autofix eval tests failed: ${lib.concatMapStringsSep ", " builtins.head badExpect}";
       token-scripts =
         pkgs.runCommand "autofix-token-tests" {

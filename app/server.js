@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import express from "express";
 import { getDb, getDbPath, upsertIncident, addIncidentEvent } from "./lib/db.js";
-import { enqueueJob } from "./lib/queue.js";
+import { enqueueJob, getForkPushTokenState } from "./lib/queue.js";
 import { ingestResultsDir, startResultsIngestLoop } from "./lib/results.js";
 import { createAdminRouter, getAdminConfig } from "./lib/admin.js";
 import { getGithubTokenConfigured, getAllowlist } from "./lib/github.js";
@@ -44,6 +44,14 @@ function requireIngestSecret(req, res, next) {
   return next();
 }
 
+function githubTokenHealth() {
+  const t = getForkPushTokenState();
+  return { known: t.known, ok: t.ok, source: t.source, checked_at: t.checked_at || null };
+}
+function githubTokenOk() {
+  return getGithubTokenConfigured() || getForkPushTokenState().ok;
+}
+
 app.get("/health", (_req, res) => {
   try {
     getDb();
@@ -52,7 +60,10 @@ app.get("/health", (_req, res) => {
       service: "neo-autofix",
       db: getDbPath(),
       ingestConfigured: Boolean(OPS_INGEST_SECRET),
-      githubConfigured: getGithubTokenConfigured(),
+      // The container never holds the GitHub token (the host worker does):
+      // report the worker's last token check, else the Nix "configured" hint.
+      githubConfigured: githubTokenOk(),
+      githubToken: githubTokenHealth(),
       allowlist: getAllowlist(),
     });
   } catch (err) {
@@ -134,6 +145,6 @@ if (pollMs > 0) {
 
 app.listen(PORT, () => {
   console.log(
-    `neo-autofix listening on :${PORT} (ingest=${Boolean(OPS_INGEST_SECRET)}, github=${getGithubTokenConfigured()}, admin=${ADMIN_ENABLED ? ADMIN_PATH : "off"}, readOnly=${ADMIN_READ_ONLY}, autoTriage=${["1", "true", "yes", "on"].includes(String(process.env.OPS_AUTOTRIAGE || "").toLowerCase())}, db=${getDbPath()})`,
+    `neo-autofix listening on :${PORT} (ingest=${Boolean(OPS_INGEST_SECRET)}, github=${githubTokenOk()}, admin=${ADMIN_ENABLED ? ADMIN_PATH : "off"}, readOnly=${ADMIN_READ_ONLY}, autoTriage=${["1", "true", "yes", "on"].includes(String(process.env.OPS_AUTOTRIAGE || "").toLowerCase())}, db=${getDbPath()})`,
   );
 });

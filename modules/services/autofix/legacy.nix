@@ -57,7 +57,32 @@
         if isAttrs v && !isDerivation v
         then mapAttrs (_: deepDefault) v
         else mkDefault v;
-      ignored = filter (k: r ? ${k}) ["githubToken" "siteUrl" "targetAllowlist" "containers"];
+
+      # Every key the older plugin accepted, by level: passed through, renamed
+      # (handled above/below) or ignored (warned). Anything else is unknown and
+      # warned too, so no [services.ops] key is dropped silently.
+      topPass = ["enabled" "ingestSecret" "subdomain" "auth" "vpn" "ingress" "customDomains" "admin"];
+      topRenamed = ["targets" "redactExtraSlugsFile" "autofix" "appdata"];
+      topIgnored = ["githubToken" "siteUrl" "targetAllowlist" "containers" "meta" "proxyConf" "systemdUnits"];
+      afPass = ["enable" "triage" "fix" "maxAttempts" "labSharesOpsHost" "hermesTimeoutSec" "extraPackages"];
+      afRenamed = ["neoBaseRef" "denyPaths" "basePaths" "redactExtraSlugsFile" "lab" "pr"];
+      prPass = ["enable" "pollMinutes" "botLogin" "maxRounds" "stopPhrase" "draft"];
+      prRenamed = ["reviewerLogin" "reviewerId"];
+      ignored = filter (k: r ? ${k}) topIgnored;
+      unknownIn = prefix: known: set: map (k: "${prefix}${k}") (filter (k: !(elem k known)) (attrNames set));
+      unknown =
+        unknownIn "" (topPass ++ topRenamed ++ topIgnored) r
+        ++ unknownIn "autofix." (afPass ++ afRenamed) a
+        ++ unknownIn "autofix.pr." (prPass ++ prRenamed) pr;
+      # The container is called autofix now; keep an explicit opsHealth working.
+      labMapped =
+        removeAttrs lab ["input" "flakeUrl"]
+        // optionalAttrs (lab ? opsHealth) {
+          opsHealth =
+            if hasPrefix "container:ops:" lab.opsHealth
+            then "container:autofix:" + removePrefix "container:ops:" lab.opsHealth
+            else lab.opsHealth;
+        };
     in {
       options.neo.services.ops = mkOption {
         type = types.attrsOf types.anything;
@@ -83,27 +108,24 @@
 
       config = {
         neo.services.autofix = mkIf used (deepDefault (
-          pick ["enabled" "ingestSecret" "subdomain" "auth" "vpn"] r
+          pick topPass r
           // {
             subdomain = r.subdomain or "ops";
-            appdata = "${appdataRoot}/ops";
+            appdata = r.appdata or "${appdataRoot}/ops";
             redact = {
               inherit termsFile;
               # The older plugin always redacted 10-character upper-case ids.
               patterns = ["[A-Z0-9]{10}"];
             };
           }
-          // optionalAttrs (r ? admin) {admin = r.admin;}
           // optionalAttrs (r ? targets) {targets = legacyTargets;}
           // optionalAttrs (r ? autofix) {
             autofix =
-              pick ["enable" "triage" "fix" "maxAttempts" "labSharesOpsHost" "hermesTimeoutSec"] a
-              // optionalAttrs (a ? lab) {
-                lab = removeAttrs lab ["input" "flakeUrl"];
-              }
+              pick afPass a
+              // optionalAttrs (a ? lab) {lab = labMapped;}
               // optionalAttrs (a ? pr) {
                 pr =
-                  pick ["enable" "pollMinutes" "botLogin" "maxRounds" "stopPhrase" "draft"] pr
+                  pick prPass pr
                   // optionalAttrs (reviewers != []) {inherit reviewers;}
                   // optionalAttrs (pins != {}) {pinnedReviewerIds = pins;};
               };
@@ -117,7 +139,8 @@
 
         warnings =
           optional used "[services.ops] is deprecated: move the settings to [services.autofix] (this alias goes away in the next release)."
-          ++ optional (used && ignored != []) "[services.ops]: ignored keys ${concatStringsSep ", " ignored} (no longer used)."
+          ++ optional (used && ignored != []) "[services.ops]: ignored keys ${concatStringsSep ", " ignored} (no longer used; containers.ops → set [services.autofix] containers.autofix if you really override the image)."
+          ++ optional (used && unknown != []) "[services.ops]: unknown keys ${concatStringsSep ", " unknown} are ignored (typo? not an option of the older plugin either)."
           ++ optional (on && (a.enable or false) && !(any isNeo (r.targets or [])))
           "[services.ops]: there is no built-in neo target any more; add a [[services.ops.targets]] entry for it (upstream + fork) if fixes should go to neo.";
       };

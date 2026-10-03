@@ -109,7 +109,7 @@ block the push.
 Checks after activation:
 
 ```bash
-sudo -u hermes neo-autofix-worker --check-token     # token kind, push + PR access
+sudo neo-autofix-check     # token kind, push + PR access, with the worker unit's user/env/PATH
 neo-autofix-pr --check
 systemctl list-timers | grep neo-autofix
 curl -fsS https://autofix.<your domain>/health
@@ -125,6 +125,14 @@ entry needs a `fork` now, and there is no built-in target. Do not install both
 plugins at once (evaluation fails on purpose). The old
 `services.credentials.ops.autofixForkPushToken` key is still read (with a
 warning) until `github.token` / `github.tokenFile` is set.
+
+Every key of the older plugin is carried over (an explicit `[services.autofix]`
+key wins), including `customDomains`, `ingress`, `auth`, `vpn`, `admin`,
+`appdata` and all `autofix.lab.*` / `autofix.pr.*` settings; `denyPaths`,
+`basePaths`, `neoBaseRef`, `lab.input` and `lab.flakeUrl` move onto the neo
+target, `reviewerLogin` / `reviewerId` become `pr.reviewers` +
+`pr.pinnedReviewerIds`. `githubToken`, `siteUrl`, `targetAllowlist` and
+`containers` are ignored with a warning; any other unknown key is warned too.
 
 ## Schema
 

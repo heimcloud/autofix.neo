@@ -87,7 +87,9 @@
         ${pkgs.coreutils}/bin/install -d -m 2770 -o ${uid} -g ${toString gid} ${concatStringsSep " " exchangeDirs}
       '';
 
-      workerEnv =
+      # Raw KEY=value list, shared by the units (Environment=, quoted where the
+      # value needs it) and /etc/neo-autofix/worker-env.json (neo-autofix-check).
+      workerEnvRaw =
         [
           "OPS_DATA_DIR=${opsAppdata}"
           "OPS_AUTOFIX_LOCK=/run/neo-autofix-worker/lock"
@@ -99,7 +101,7 @@
           }"
           "OPS_TARGETS_FILE=${targetsFile}"
           "OPS_BASE_REFS_FILE=${opsAppdata}/state/base-refs.json"
-          (envQ "OPS_TIME_ZONE=${env.timeZone}")
+          "OPS_TIME_ZONE=${env.timeZone}"
           "OPS_AUTOFIX_HERMES_TIMEOUT_SEC=${toString af.hermesTimeoutSec}"
           "OPS_DB_PATH=${opsAppdata}/ops.sqlite"
           "HOME=${hermesState}"
@@ -112,7 +114,7 @@
           "OPENSSL_LIB_DIR=${getLib pkgs.openssl}/lib"
           "OPENSSL_INCLUDE_DIR=${pkgs.openssl.dev}/include"
         ]
-        ++ redactEnvList
+        ++ mapAttrsToList (k: v: "${k}=${v}") env.redactEnv
         ++ optional (botLogin != null) "OPS_PR_BOT_LOGIN=${botLogin}"
         ++ optional triageOn "OPS_AUTOFIX_TRIAGE=1"
         ++ optional fixOn "OPS_AUTOFIX_FIX=1"
@@ -132,7 +134,7 @@
           "OPS_PR_REVIEWERS=${concatStringsSep "," pr.reviewers}"
           "OPS_PR_PINNED_REVIEWER_IDS=${pinsStr}"
           "OPS_PR_MAX_ROUNDS=${toString pr.maxRounds}"
-          (envQ "OPS_PR_STOP_PHRASE=${pr.stopPhrase}")
+          "OPS_PR_STOP_PHRASE=${pr.stopPhrase}"
           "OPS_PR_POLL_MINUTES=${toString pr.pollMinutes}"
           "OPS_PR_DRAFT=${
             if pr.draft
@@ -140,6 +142,34 @@
             else "0"
           }"
         ];
+
+      envKey = e: builtins.unsafeDiscardStringContext (head (splitString "=" e));
+      envVal = e: concatStringsSep "=" (tail (splitString "=" e));
+      quotedEnvKeys = ["OPS_TIME_ZONE" "OPS_PR_STOP_PHRASE"] ++ attrNames env.redactEnv;
+      workerEnv = map (e:
+        if elem (envKey e) quotedEnvKeys
+        then envQ e
+        else e)
+      workerEnvRaw;
+      workerEnvJson = pkgs.writeText "neo-autofix-worker-env.json" (builtins.toJSON (listToAttrs (map (e: nameValuePair (envKey e) (envVal e)) workerEnvRaw)));
+
+      # `sudo neo-autofix-check`: the token check with the worker unit's user,
+      # environment (worker-env.json, loaded by the worker) and PATH, from /.
+      checkScript = pkgs.writeShellScriptBin "neo-autofix-check" ''
+        set -euo pipefail
+        if [ "$(${pkgs.coreutils}/bin/id -u)" = 0 ]; then
+          exec ${pkgs.util-linux}/bin/runuser -u hermes -- "$(${pkgs.coreutils}/bin/readlink -f "$0")" "$@"
+        fi
+        if [ "$(${pkgs.coreutils}/bin/id -un)" != hermes ]; then
+          echo "neo-autofix-check: run as root (sudo neo-autofix-check) or as hermes" >&2
+          exit 2
+        fi
+        cd /
+        export PATH=${makeBinPath (filter isDerivation workerPath)}:/run/current-system/sw/bin
+        unset OPS_DATA_DIR
+        export NEO_AUTOFIX_UNIT_ENV=${workerEnvJson}
+        exec ${workerPkg}/bin/neo-autofix-worker --check-token "$@"
+      '';
 
       workerPath =
         [workerPkg pkgs.nodejs_22 pkgs.git pkgs.gh pkgs.openssh pkgs.sqlite pkgs.bash pkgs.coreutils pkgs.util-linux]
@@ -173,7 +203,9 @@
         # toolchain must be in the hermes user profile too (not only the unit PATH).
         users.users.hermes.packages = af.extraPackages;
 
-        environment.systemPackages = [workerPkg];
+        environment.systemPackages = [workerPkg] ++ optional workerOn checkScript;
+        # Unit environment (no secrets) for interactive checks outside the unit.
+        environment.etc."neo-autofix/worker-env.json" = mkIf workerOn {source = workerEnvJson;};
         # Same allowlist for interactive checks (`sudo -u hermes neo-autofix-worker
         # --check-token`, `neo-autofix-pr --check`): default OPS_TARGETS_FILE.
         environment.etc."neo-autofix/targets.json".source = targetsFile;

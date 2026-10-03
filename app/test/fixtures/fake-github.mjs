@@ -107,6 +107,7 @@ const server = http.createServer((req, res) => {
     }
     if ((m = /^\/repos\/[^/]+\/[^/]+\/issues\/(\d+)\/comments$/.exec(u.pathname))) {
       s.issue_comments ||= {};
+      if (req.method === "POST" && s.comment_fail) return send(s.comment_fail.status, { message: s.comment_fail.message });
       if (req.method === "POST") {
         const c = { id: 900000 + Object.values(s.issue_comments).flat().length, body: parsed.body, user: { login: s.user.login, id: s.user.id, type: "User" }, created_at: new Date().toISOString(), html_url: "https://github.com/x/y/pull/1#c" };
         (s.issue_comments[m[1]] ||= []).push(c);

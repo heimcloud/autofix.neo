@@ -667,7 +667,7 @@ test("reviewers: pinned id (configuration or state) differs from GitHub → revi
   assert.deepEqual(r.reviewers, [{ login: "example-maint", id: 23456789 }]);
 });
 
-test("review request on open: 201 records it; 403 / 422 → one @-mention comment instead (non-fatal)", () => {
+test("review request on open: 201 records it; 403 / 404 / 422 → one @-mention comment instead (non-fatal)", () => {
   resetState();
   const cfg = prCfg(NEO, { prStateDir: path.join(tmp, "rq"), trustedReviewers: [{ login: "example-maint", id: 23456789 }] });
   const pr = PR.openOrAdoptPr(cfg, { branch: "fix/rq", title: "fix: rq", body: "b" });
@@ -676,8 +676,9 @@ test("review request on open: 201 records it; 403 / 422 → one @-mention commen
   assert.equal(q.ok, true);
   assert.deepEqual(rec.review_requested, ["example-maint"]);
   assert.deepEqual(ghLog().find((l) => /requested_reviewers/.test(l.path)).body, { reviewers: ["example-maint"] });
-  for (const status of [403, 422]) {
-    resetState({ request_reviewers_fail: { status, message: status === 403 ? "Must have admin rights" : "Reviews may only be requested from collaborators." } });
+  for (const status of [403, 404, 422]) {
+    const message = { 403: "Must have admin rights", 404: "Not Found", 422: "Reviews may only be requested from collaborators." }[status];
+    resetState({ request_reviewers_fail: { status, message } });
     const p2 = PR.openOrAdoptPr(cfg, { branch: `fix/rq-${status}`, title: "fix: rq", body: "b" });
     const r2 = PR.newRecord(cfg, { incident_id: 32, branch: `fix/rq-${status}` }, p2);
     q = PR.requestReview(cfg, r2);
@@ -687,10 +688,21 @@ test("review request on open: 201 records it; 403 / 422 → one @-mention commen
     const c = ghLog().filter((l) => l.method === "POST" && /issues\/\d+\/comments$/.test(l.path));
     assert.equal(c.length, 1);
     assert.match(c[0].body.body, /^Review requested: @example-maint\b/);
+    assert.equal(r2.review_request_refused, status);
     // Once per PR.
     assert.equal(PR.requestReview(cfg, r2).skipped, true);
     assert.equal(ghLog().filter((l) => l.method === "POST" && /comments$/.test(l.path)).length, 1);
+    assert.equal(ghLog().filter((l) => /requested_reviewers/.test(l.path)).length, 1);
   }
+  // Refused and the mention failed too: still no retry of either call.
+  resetState({ request_reviewers_fail: { status: 404, message: "Not Found" }, comment_fail: { status: 500, message: "boom" } });
+  const p3 = PR.openOrAdoptPr(cfg, { branch: "fix/rq-nomention", title: "fix: rq", body: "b" });
+  const r3 = PR.newRecord(cfg, { incident_id: 33, branch: "fix/rq-nomention" }, p3);
+  q = PR.requestReview(cfg, r3);
+  assert.equal(q.ok, false);
+  assert.equal(r3.review_request_refused, 404);
+  assert.equal(PR.requestReview(cfg, r3).skipped, true);
+  assert.equal(ghLog().filter((l) => /requested_reviewers/.test(l.path)).length, 1);
 });
 
 // ------------------------------------------------------------ push guard

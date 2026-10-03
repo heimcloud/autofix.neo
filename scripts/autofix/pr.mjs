@@ -613,20 +613,26 @@ export function resolveReviewers(cfg, target) {
   return { reviewers, source, notes, idChanged };
 }
 
+/** Statuses GitHub uses when the token may not request reviews here (non-fatal). */
+export const REVIEW_REQUEST_REFUSED = [403, 404, 422];
+
 /**
  * Ask GitHub for a review on a PR the bot opened. Without the permission
- * (403, or 422 for non-collaborators) post one @-mention comment instead.
- * Mutates rec (review_requested / reviewer_mention_posted).
+ * (403; 404 for a fork author on someone else's repo; 422 for
+ * non-collaborators) post one @-mention comment instead. Never fatal and
+ * never retried: one request per PR, then at most one mention.
+ * Mutates rec (review_requested / review_request_refused / reviewer_mention_posted).
  */
 export function requestReview(cfg, rec, slugs = []) {
   const logins = (rec.reviewers || []).map((r) => r.login).filter((l) => LOGIN_RE.test(l));
-  if (!logins.length || rec.review_requested || rec.reviewer_mention_posted) return { skipped: true };
+  if (!logins.length || rec.review_requested || rec.reviewer_mention_posted || rec.review_request_refused) return { skipped: true };
   const r = ghCall(cfg, "POST", `/repos/${cfg.target.upstream}/pulls/${Number(rec.number)}/requested_reviewers`, { reviewers: logins });
   if (okStatus(r, 201, 200)) {
     rec.review_requested = logins;
     return { ok: true, requested: logins };
   }
   const why = apiError(r);
+  rec.review_request_refused = REVIEW_REQUEST_REFUSED.includes(Number(r.status)) ? Number(r.status) : "error";
   const text = `Review requested: ${logins.map((l) => `@${l}`).join(" ")}. (Autofix could not request a review on this repository directly, so this mention notifies you. Comments from you on this PR are picked up automatically; \`${cfg.stopPhrase}\` stops the automation.)`;
   if (outboundHits(text, slugs).length) return { ok: false, error: why, mention: false };
   const c = postComment(cfg, rec.number, text);

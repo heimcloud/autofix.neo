@@ -12,7 +12,7 @@
 
     app = buildNpmPackage {
       pname = "neo-autofix";
-      version = "0.1.0";
+      version = "0.1.1";
       src = lib.cleanSourceWith {
         src = self + "/app";
         filter = path: type: let
@@ -26,7 +26,7 @@
           && !(lib.hasSuffix ".sqlite-wal" path)
           && !(lib.hasSuffix ".sqlite-shm" path);
       };
-      npmDepsHash = "sha256-w4hRf+tilJn7FJ7ZAHS1f7s/QB0VUF98UQ9Xrma1lhA=";
+      npmDepsHash = "sha256-v/lj7+UuOhh9pySUBj+xGdCXGNKc93lAbZOXtBjOEmU=";
       inherit nodejs;
       dontNpmBuild = true;
       nativeBuildInputs = [python3 pkg-config removeReferencesTo];
