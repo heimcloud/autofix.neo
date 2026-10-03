@@ -1,0 +1,1 @@
+../../app/lib/compare.js

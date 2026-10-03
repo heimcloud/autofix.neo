@@ -1,0 +1,12 @@
+result
+.env
+node_modules
+app/node_modules
+*.log
+.DS_Store
+dist
+app/dist
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+data/
