@@ -2,7 +2,7 @@
  * Lab-test check schema, shared by the host worker (validates Hermes's plan),
  * the root lab runner (re-validates before executing anything) and the ops app
  * (renders the per-check results). One source: app/lib/lab-checks.js;
- * scripts/autofix/lab-checks.js is a symlink to it and the worker package
+ * scripts/autofix imports it as ../../app/lib/lab-checks.js and the worker package
  * copies this file (a test enforces both). Only plain JS, no imports.
  *
  * Hermes may only choose from these check types. Every field is validated and

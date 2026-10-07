@@ -30,7 +30,9 @@ import {
   listDistinctCustomerRepoSlugs,
   listEventsForIncidents,
   listFixAttemptsForIncidents,
+  createRequestIncident,
 } from "./db.js";
+import { renderComposer, validateRequest } from "./composer.js";
 import {
   enqueueJob,
   enqueuePushJob,
@@ -113,7 +115,7 @@ export function createAdminRouter() {
     next();
   });
 
-  router.use(express.urlencoded({ extended: true }));
+  router.use(express.urlencoded({ extended: true, limit: "512kb" }));
   router.use(express.json({ limit: "16kb" }));
 
   // Same-origin guard on every mutating request (edge auth is cookie based).
@@ -418,6 +420,55 @@ export function createAdminRouter() {
   }
 
   router.post("/incidents/:id/start-fix", enqueueHandler("fix"));
+
+  // ---- Feature / bug request composer (trusted admin input) ----
+  router.get("/request", (req, res) => {
+    const base = req.adminBase;
+    res.type("html").send(
+      adminLayout({
+        title: "New request",
+        basePath: base,
+        readOnly: ADMIN_READ_ONLY,
+        wide: true,
+        head: `<link rel="stylesheet" href="/css/board.css" />`,
+        body: `${readOnlyBanner()}${renderComposer({ base, allowlist: getAllowlist(), fixEnabled: isAutofixKindEnabled("fix"), readOnly: ADMIN_READ_ONLY, values: { type: req.query.type === "bug" ? "bug" : "feature" } })}`,
+      }),
+    );
+  });
+
+  router.post("/request", (req, res) => {
+    const base = req.adminBase;
+    if (refuseMutations(res, base)) return;
+    const allowlist = getAllowlist();
+    const v = validateRequest(req.body, allowlist);
+    const again = (status, error) =>
+      res.status(status).type("html").send(
+        adminLayout({
+          title: "New request",
+          basePath: base,
+          wide: true,
+          head: `<link rel="stylesheet" href="/css/board.css" />`,
+          body: renderComposer({ base, allowlist, values: req.body || {}, error, fixEnabled: isAutofixKindEnabled("fix") }),
+        }),
+      );
+    if (!v.ok) return again(400, v.error);
+    const { title, body, type, target } = v.value;
+    const incident = createRequestIncident({ source: "admin", title, requestType: type, body, targetRepo: target });
+    try {
+      const { path: jobPath, job } = enqueueJob("fix", incident);
+      updateIncident(incident.id, { status: "fixing" });
+      addIncidentEvent(incident.id, "fix_enqueued", `Fix job enqueued for host worker (admin ${type} request)`, {
+        target_repo: target,
+        job_file: jobPath.split("/").pop(),
+        job_kind: job.kind,
+        request_chars: body.length,
+      });
+      return res.redirect(303, `${base}/?msg=${encodeURIComponent(`Request #${incident.id} created; fix job queued`)}#incident-${incident.id}`);
+    } catch (err) {
+      console.error("[admin] request enqueue", err.code || "", err.message);
+      return res.redirect(303, `${base}/?err=${encodeURIComponent(`Request #${incident.id} saved, but the fix job was not queued: ${err.message}`)}#incident-${incident.id}`);
+    }
+  });
   router.post("/incidents/:id/retry-push", (req, res) => {
     const base = req.adminBase;
     const json = wantsJson(req);

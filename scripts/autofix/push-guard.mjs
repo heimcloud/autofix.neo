@@ -18,7 +18,7 @@
  * Branch protection on the forks' default branches (no force-push, no
  * deletion; see the README) is the backstop, not the control.
  */
-import { findTargetByFork } from "./targets.js";
+import { findTargetByFork } from "../../app/lib/targets.js";
 
 export const PUSH_BRANCH_RE = /^(fix|ops)\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
 

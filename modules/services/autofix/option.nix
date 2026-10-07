@@ -195,6 +195,20 @@
                 rank = 10;
               };
 
+              publicReports = mkOption {
+                type = types.submodule {
+                  options.enable = mkOption {
+                    type = types.bool;
+                    default = true;
+                    description = "Manual bug / feature report form on the public page. Reports land on the board as untrusted (source manual) and are never enqueued automatically; rate-limited, size-limited, honeypot + question, redacted.";
+                    rank = 10;
+                  };
+                };
+                default = {};
+                description = "Public (unauthenticated) report form.";
+                rank = 11;
+              };
+
               autofix = mkOption {
                 type = types.submodule {
                   options = {

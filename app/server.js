@@ -8,6 +8,7 @@ import { enqueueJob, getForkPushTokenState } from "./lib/queue.js";
 import { ingestResultsDir, startResultsIngestLoop } from "./lib/results.js";
 import { createAdminRouter, getAdminConfig } from "./lib/admin.js";
 import { getGithubTokenConfigured, getAllowlist } from "./lib/github.js";
+import { createPublicRouter } from "./lib/public.js";
 
 const PORT = Number(process.env.PORT || 3000);
 // Ingest secret: OPS_INGEST_SECRET_FILE (a file mounted into the container,
@@ -27,8 +28,18 @@ function readIngestSecret() {
 const OPS_INGEST_SECRET = readIngestSecret();
 
 const app = express();
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json({ limit: "2mb" }));
+// Client IP (public report rate limit): X-Forwarded-For is only honoured from
+// a trusted peer. Default: loopback + private ranges (SWAG on the Docker
+// network); OPS_TRUST_PROXY overrides (Express "trust proxy" syntax).
+app.set("trust proxy", process.env.OPS_TRUST_PROXY || "loopback, uniquelocal");
+const { ADMIN_ENABLED, ADMIN_PATH, ADMIN_READ_ONLY } = getAdminConfig();
+// Body parsers: the admin router and the public report route bring their own
+// (admin: large composer requests; public: small, strict limits).
+const underAdmin = (req) => ADMIN_ENABLED && (req.path === ADMIN_PATH || req.path.startsWith(`${ADMIN_PATH}/`));
+const globalForm = express.urlencoded({ extended: true, limit: "100kb" });
+const globalJson = express.json({ limit: "2mb" });
+app.use((req, res, next) => (underAdmin(req) || req.path === "/report" ? next() : globalForm(req, res, next)));
+app.use((req, res, next) => (underAdmin(req) || req.path === "/report" ? next() : globalJson(req, res, next)));
 app.use(express.static(new URL("./public", import.meta.url).pathname));
 
 function requireIngestSecret(req, res, next) {
@@ -71,25 +82,7 @@ app.get("/health", (_req, res) => {
   }
 });
 
-app.get("/", (_req, res) => {
-  res.type("html").send(`<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/><title>Autofix</title>
-<link rel="stylesheet" href="/css/ops.css"/></head>
-<body>
-<header class="site-header"><a class="logo" href="/">Autofix</a>
-<nav><a href="/admin">Admin</a><a href="/health">Health</a></nav></header>
-<main>
-  <section class="hero">
-    <h1>Autofix</h1>
-    <p class="lead">Incident ingest + admin. Incident desk. Auto-fix is opt-in on the host (see docs/AUTOFIX_DESIGN.md). No auto-merge.</p>
-    <p><a class="btn" href="/admin">Open admin</a></p>
-    <div class="card">
-      <p class="muted">Ingest: <code>POST /api/incidents</code> with <code>Authorization: Bearer …</code> or <code>X-Ops-Secret</code>.</p>
-    </div>
-  </section>
-</main>
-</body></html>`);
-});
+app.use(createPublicRouter({ adminPath: ADMIN_ENABLED ? ADMIN_PATH : "" }));
 
 app.post("/api/incidents", requireIngestSecret, (req, res) => {
   try {
@@ -97,7 +90,7 @@ app.post("/api/incidents", requireIngestSecret, (req, res) => {
     const { incident, created } = upsertIncident(body);
     if (created && ["1", "true", "yes", "on"].includes(String(process.env.OPS_AUTOTRIAGE || "").toLowerCase())) {
       try {
-        const { path: jobPath } = enqueueJob("triage", incident);
+        const { path: jobPath } = enqueueJob("triage", incident, { trigger: "auto" });
         addIncidentEvent(incident.id, "triage_enqueued", "Auto-triage job enqueued (OPS_AUTOTRIAGE on ingest)", { job_path: jobPath, trigger: "ingest_autotriage" });
       } catch (err) {
         console.error("[ingest] autotriage enqueue failed", err);
@@ -124,7 +117,6 @@ app.post("/api/incidents", requireIngestSecret, (req, res) => {
   }
 });
 
-const { ADMIN_ENABLED, ADMIN_PATH, ADMIN_READ_ONLY } = getAdminConfig();
 if (ADMIN_ENABLED) {
   const adminRouter = createAdminRouter();
   app.use(ADMIN_PATH, adminRouter);

@@ -139,29 +139,16 @@ test("triage result only promotes open incidents", () => {
   assert.equal(getIncident(inc2.id).status, "testing");
 });
 
-test("worker copies of redact.js / compare.js / queue-control.js / lab-checks.js are byte-identical to app/lib", () => {
-  for (const f of ["redact.js", "compare.js", "queue-control.js", "lab-checks.js"]) {
-    const a = fs.readFileSync(path.join(repo, "app", "lib", f), "utf8");
-    const b = fs.readFileSync(path.join(repo, "scripts", "autofix", f), "utf8");
-    assert.equal(a, b, `${f} drifted: cp app/lib/${f} scripts/autofix/${f}`);
+test("no tracked symlinks: scripts import the one copy of the shared modules from app/lib", () => {
+  const shared = ["redact.js", "compare.js", "queue-control.js", "lab-checks.js", "targets.js"];
+  for (const f of shared) assert.ok(!fs.existsSync(path.join(repo, "scripts", "autofix", f)), `scripts/autofix/${f} must not exist (import ../../app/lib/${f})`);
+  for (const f of ["worker.mjs", "labtest.mjs", "pr.mjs", "pr-wrapper.mjs", "push-guard.mjs"]) {
+    const src = fs.readFileSync(path.join(repo, "scripts", "autofix", f), "utf8");
+    assert.doesNotMatch(src, /from "\.\/(redact|compare|queue-control|lab-checks|targets)\.js"/, f);
   }
-});
-
-test("lab-checks.js has one source: scripts/autofix symlinks it and the worker package copies app/lib", () => {
-  const link = path.join(repo, "scripts", "autofix", "lab-checks.js");
-  assert.ok(fs.lstatSync(link).isSymbolicLink(), "scripts/autofix/lab-checks.js must be a symlink");
-  assert.equal(fs.readlinkSync(link), "../../app/lib/lab-checks.js");
   const pkg = fs.readFileSync(path.join(repo, "modules/packages/worker.nix"), "utf8");
-  assert.match(pkg, /cp \$\{\.\.\/\.\.\/app\/lib\/lab-checks\.js\} \$out\/lab-checks\.js/);
-});
-
-test("targets.js has one source: scripts/autofix symlinks it; the worker package copies it with pr / wrapper / push guard", () => {
-  const link = path.join(repo, "scripts", "autofix", "targets.js");
-  assert.ok(fs.lstatSync(link).isSymbolicLink(), "scripts/autofix/targets.js must be a symlink");
-  assert.equal(fs.readlinkSync(link), "../../app/lib/targets.js");
-  const pkg = fs.readFileSync(path.join(repo, "modules/packages/worker.nix"), "utf8");
-  assert.match(pkg, /cp \$\{\.\.\/\.\.\/app\/lib\/targets\.js\} \$out\/targets\.js/);
-  for (const f of ["pr.mjs", "pr-wrapper.mjs", "push-guard.mjs"]) assert.ok(pkg.includes(`cp \${../../scripts/autofix/${f}} $out/${f}`), f);
+  for (const f of shared) assert.ok(pkg.includes(`"${f}"`), `worker.nix copies app/lib/${f}`);
+  for (const f of ["pr.mjs", "pr-wrapper.mjs", "push-guard.mjs"]) assert.ok(pkg.includes(`"${f}"`), f);
   assert.match(pkg, /name = "neo-autofix-pr";/);
 });
 

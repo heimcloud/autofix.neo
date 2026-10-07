@@ -509,6 +509,8 @@ export function safeLink(url, redact) {
 
 /** Short incident summary: latest triage summary, else first log line. */
 export function incidentSummary(incident, events = []) {
+  // Manual reports / admin requests carry a title of their own.
+  if (incident?.source && incident.source !== "reporter" && String(incident.title || "").trim()) return String(incident.title).trim();
   const t = latestEvent(events, ["triage_result"]);
   const fromTriage = t?.meta && t.meta.status !== "triage_failed" ? t.meta.summary : "";
   if (fromTriage && String(fromTriage).trim()) return String(fromTriage).trim();

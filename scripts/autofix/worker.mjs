@@ -24,8 +24,8 @@ import {
   findIdentifierHits,
   getExtraRedactSlugs,
   mergeKnownSlugs,
-} from "./redact.js";
-import { buildCompareUrl } from "./compare.js";
+} from "../../app/lib/redact.js";
+import { buildCompareUrl } from "../../app/lib/compare.js";
 import {
   listPending,
   readPause,
@@ -34,7 +34,7 @@ import {
   reasonFile,
   atomicWriteJson,
   controlDir,
-} from "./queue-control.js";
+} from "../../app/lib/queue-control.js";
 import {
   validateCheckPlan,
   defaultChecks,
@@ -49,9 +49,9 @@ import {
   protectedPrefixesHit,
   describeProtected,
   normalizeProtected,
-} from "./lab-checks.js";
+} from "../../app/lib/lab-checks.js";
 import { guardedPush } from "./push-guard.mjs";
-import { loadTargets, findTarget, compareOpts, targetHints, routeTarget, forkOwner } from "./targets.js";
+import { loadTargets, findTarget, compareOpts, targetHints, routeTarget, forkOwner } from "../../app/lib/targets.js";
 import {
   wrapperEnv as prWrapperEnv,
   prConfig,
@@ -1009,6 +1009,7 @@ export function handleTriage(cfg, job, ctx) {
       `class: ${job.class}`,
       `neo_version: ${job.neo_version}`,
       "",
+      ...requestSection(job),
       "logs_excerpt (redacted):",
       job.logs_excerpt || "(none)",
       "",
@@ -1105,6 +1106,27 @@ function cloneNeo(cfg, neoDir) {
   return { ok: false, error: errors.join(" | ") };
 }
 
+/** Job fields every follow-up job (lab, lab retry, revise) carries along. */
+export function carried(job) {
+  const out = {};
+  if (job.source) out.source = job.source;
+  for (const k of ["request_title", "request_type", "request_body"]) if (typeof job[k] === "string" && job[k]) out[k] = job[k];
+  return out;
+}
+
+/** Admin composer request, verbatim (trusted, authenticated admin). */
+export function requestSection(job) {
+  if (job.source !== "admin" || typeof job.request_body !== "string" || !job.request_body) return [];
+  return [
+    `Admin ${job.request_type === "feature" ? "feature request" : "bug report"} (trusted, from the authenticated admin; verbatim, implement it in the target repo):`,
+    `Title: ${String(job.request_title || "(none)")}`,
+    "----- request (markdown) -----",
+    job.request_body,
+    "----- end of request -----",
+    "",
+  ];
+}
+
 function fixPrompt(job, neoDir, cfg, attempt, previousFailure, continueBranch = "") {
   const repo = cfg.target?.upstream || "(no target)";
   const revise = job.revise && typeof job.revise_feedback === "string";
@@ -1119,6 +1141,7 @@ function fixPrompt(job, neoDir, cfg, attempt, previousFailure, continueBranch = 
     `class: ${job.class}`,
     `neo_version: ${job.neo_version}`,
     "",
+    ...requestSection(job),
     "logs_excerpt (redacted):",
     job.logs_excerpt || "(none)",
     "",
@@ -1832,9 +1855,12 @@ function incidentJobPending(cfg, incidentId) {
  */
 export function findIncident(cfg, { branch, id, target }) {
   if (!fs.existsSync(cfg.dbPath)) return null;
-  const cols = "i.id, i.status, i.report_hash, i.unit, i.severity, i.class, i.neo_version, i.logs_excerpt, i.target_repo";
+  const baseCols = "i.id, i.status, i.report_hash, i.unit, i.severity, i.class, i.neo_version, i.logs_excerpt, i.target_repo";
+  // v0.3 columns (source / admin request); an older DB without them falls back.
+  const cols = `${baseCols}, i.source, i.title AS request_title, i.request_type, CASE WHEN i.source = 'admin' THEN i.request_body END AS request_body`;
   const q = (sql) => {
-    const r = run("sqlite3", ["-readonly", "-json", cfg.dbPath, sql], { timeout: 15_000 });
+    let r = run("sqlite3", ["-readonly", "-json", cfg.dbPath, sql], { timeout: 15_000 });
+    if (r.status !== 0 && sql.includes(cols)) r = run("sqlite3", ["-readonly", "-json", cfg.dbPath, sql.replace(cols, baseCols)], { timeout: 15_000 });
     if (r.status !== 0) return [];
     try {
       const rows = JSON.parse(r.stdout || "[]");
@@ -1919,6 +1945,7 @@ export function enqueueLab(cfg, job, fields) {
     class: job.class,
     neo_version: job.neo_version,
     logs_excerpt: job.logs_excerpt,
+    ...carried(job),
     max_attempts: cfg.maxAttempts,
     ...fields,
   });
@@ -1960,6 +1987,7 @@ export function planLabChecks(cfg, job, ctx) {
       `severity: ${job.severity}`,
       `class: ${job.class}`,
       "",
+      ...requestSection(job),
       "logs_excerpt (redacted):",
       job.logs_excerpt || "(none)",
       "",
@@ -2173,6 +2201,7 @@ export function handleLab(cfg, job, ctx) {
         class: job.class,
         neo_version: job.neo_version,
         logs_excerpt: job.logs_excerpt,
+        ...carried(job),
         attempt: attempt + 1,
         branch: job.branch,
         lab_failure: failure,
@@ -2440,6 +2469,15 @@ export function processOne(cfg, entry) {
     reason = { code: "malformed_job", reason: `malformed job JSON (${err.message})` };
     addIssue(cfg, "malformed_job", `Malformed ${entry.kind} job ${entry.name} moved to failed.`, { job: pname });
     result = failureResult(entry.kind, idFromName, `worker error: malformed job file (${err.message}); re-enqueue from the admin UI.`);
+  }
+  // Manual (public, untrusted) reports only run when an admin started them
+  // (enqueued_by admin) or as a continuation of such a run (worker).
+  if (job && (entry.kind === "triage" || entry.kind === "fix") && job.source === "manual" && !["admin", "worker"].includes(String(job.enqueued_by || ""))) {
+    bucket = "failed";
+    reason = { code: "manual_needs_admin", reason: "manual report not started by an admin" };
+    addIssue(cfg, "manual_needs_admin", `Refused ${entry.kind} job ${entry.name}: manual report not started by an admin.`, { job: pname });
+    result = failureResult(entry.kind, Number(job.incident_id), "Refused: this is a manual (untrusted) report; only an admin can start triage / fix from the board.");
+    job = null;
   }
   if (job) {
     // Claim counter (poison-job detection in recoverStale). Rename-based

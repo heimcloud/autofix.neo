@@ -123,7 +123,7 @@ export class QueueError extends Error {
   constructor(code, message, cause) {
     super(message);
     this.code = code;
-    this.status = code === "autofix_disabled" || code === "already_queued" ? 409 : 503;
+    this.status = code === "autofix_disabled" || code === "already_queued" || code === "manual_needs_admin" ? 409 : 503;
     if (cause) this.cause = cause;
   }
 }
@@ -156,10 +156,19 @@ export function ensureDir(d) {
   }
 }
 
+const SOURCE_SET = new Set(["reporter", "manual", "admin"]);
+/** Composer request fields carried by every job of an admin request. */
+export const REQUEST_KEYS = ["request_title", "request_type", "request_body"];
+function requestFields(incident) {
+  return { request_title: String(incident.title || ""), request_type: incident.request_type === "feature" ? "feature" : "bug", request_body: String(incident.request_body) };
+}
+
 /** The incident fields every job carries, redacted like buildJobPayload. */
 export function redactedIncidentFields(incident) {
   const p = buildJobPayload("pr", incident);
-  return { report_hash: p.report_hash, unit: p.unit, severity: p.severity, class: p.class, neo_version: p.neo_version, logs_excerpt: p.logs_excerpt };
+  const out = { report_hash: p.report_hash, unit: p.unit, severity: p.severity, class: p.class, neo_version: p.neo_version, logs_excerpt: p.logs_excerpt, source: p.source };
+  for (const k of REQUEST_KEYS) if (p[k] != null) out[k] = p[k];
+  return out;
 }
 
 /**
@@ -184,6 +193,12 @@ export function buildJobPayload(kind, incident, extra = {}) {
     class: redact(incident.class || "unknown"),
     neo_version: redact(incident.neo_version || ""),
     logs_excerpt: redact(incident.logs_excerpt || ""),
+    // Where the incident came from; the worker refuses a manual (untrusted)
+    // report unless an admin started the job.
+    source: SOURCE_SET.has(incident.source) ? incident.source : "reporter",
+    // Admin composer request: trusted (authenticated admin), passed to Hermes
+    // verbatim (no redaction, no truncation; the PR text gates still apply).
+    ...(incident.source === "admin" && incident.request_body ? requestFields(incident) : {}),
     // Allowlisted target (fix jobs): the worker clones / pushes / tests it.
     ...(kind === "fix" ? { target_repo: resolveTargetRepo(incident) } : {}),
     ...(extra.validation ? { validation: true } : {}),
@@ -219,7 +234,13 @@ export function enqueueJob(kind, incident, extra = {}) {
       `Target repo ${String(incident.target_repo).slice(0, 120)} is not allowlisted ([[services.autofix.targets]]); set an allowlisted target on the incident first.`,
     );
   }
-  const job = buildJobPayload(kind, incident, extra);
+  // Manual (public, untrusted) reports are never enqueued automatically
+  // (auto-triage on ingest, any other automatic trigger): a human starts them.
+  const trigger = extra.trigger === "auto" ? "auto" : "admin";
+  if (incident.source === "manual" && trigger !== "admin") {
+    throw new QueueError("manual_needs_admin", `Incident #${incident.id} is a manual (untrusted) report: only an admin can start ${kind} from the board.`);
+  }
+  const job = { ...buildJobPayload(kind, incident, extra), enqueued_by: trigger };
   // Defense: never allow slug field
   if ("customer_repo_slug" in job) delete job.customer_repo_slug;
 

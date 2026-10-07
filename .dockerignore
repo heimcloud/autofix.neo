@@ -1,5 +1,5 @@
 .git
-result
+/result*
 .env
 **/node_modules
 **/.env

@@ -118,6 +118,8 @@
         in
           j.OPS_AUTOFIX_PR == "1" && j.OPS_REDACT_PATTERNS == "ZZ[0-9]{8}" && j.OPS_DATA_DIR == "/var/neo/DATA/AppData/autofix" && j.OPS_PR_REVIEWERS == "example-upstream" && !(lib.any (k: lib.hasInfix "TOKEN=" k) (lib.attrNames j)))
       ]
+      ["on: public reports on by default" (onEnv.OPS_PUBLIC_REPORTS == "true")]
+      ["off: public reports switch" ((bad {services.autofix = {enabled = true; publicReports.enable = false;};}).config.virtualisation.oci-containers.containers.autofix.environment.OPS_PUBLIC_REPORTS == "false")]
       ["on: neo-autofix-check installed" (lib.any (p: (p.name or "") == "neo-autofix-check") oc.environment.systemPackages)]
       # --- off
       ["off: no container" (!(off.config.virtualisation.oci-containers.containers ? autofix))]
@@ -162,6 +164,21 @@
     };
   in {
     checks = {
+      # Repo hygiene on the flake source (= the tracked tree): no symlinks at
+      # all (a committed nix `result` link points into /nix/store), no build
+      # outputs, dependencies, logs, editor or OS files.
+      repo-hygiene = pkgs.runCommand "autofix-repo-hygiene" {} ''
+        cd ${self}
+        bad=0
+        links=$(find . -type l)
+        if [ -n "$links" ]; then echo "tracked symlinks:"; for l in $links; do echo "  $l -> $(readlink "$l")"; done; bad=1; fi
+        junk=$(find . \( -name node_modules -o -name 'result' -o -name 'result-*' -o -name .DS_Store -o -name '*.log' -o -name '*.swp' -o -name '*~' -o -name '*.orig' -o -name '*.rej' -o -name '*.sqlite' -o -name '*.sqlite-wal' -o -name '*.sqlite-shm' -o -name '.env' -o -name '__pycache__' -o -name dist \) -print)
+        if [ -n "$junk" ]; then echo "artifacts in the tree:"; echo "$junk"; bad=1; fi
+        big=$(find . -type f -size +512k ! -name package-lock.json ! -name flake.lock)
+        if [ -n "$big" ]; then echo "oversized files (>512 KiB):"; echo "$big"; bad=1; fi
+        [ "$bad" = 0 ] || exit 1
+        echo ok > $out
+      '';
       eval =
         if badExpect == []
         then pkgs.runCommand "autofix-eval-tests" {} "echo ${toString (builtins.length allExpect)} expectations ok > $out"

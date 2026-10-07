@@ -5,6 +5,7 @@
  */
 import Database from "better-sqlite3";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 
 const DB_PATH = process.env.OPS_DB_PATH || "/data/ops.sqlite";
@@ -67,6 +68,7 @@ function migrate(database) {
   const version = Number(database.pragma("user_version", { simple: true }) || 0);
   if (version >= SCHEMA_VERSION) {
     ensureFixAttempts(database);
+    ensureRequestColumns(database);
     return;
   }
 
@@ -141,6 +143,7 @@ function migrate(database) {
     }
 
     ensureFixAttempts(database);
+    ensureRequestColumns(database);
     database.pragma(`user_version = ${SCHEMA_VERSION}`);
   });
   tx();
@@ -212,6 +215,71 @@ function ensureFixAttempts(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_fix_attempts_incident ON fix_attempts(incident_id);
   `);
+}
+
+/**
+ * Where an incident came from (additive columns, no rebuild):
+ *   source        reporter (POST /api/incidents, default) | manual (public form,
+ *                 untrusted: never auto-enqueued) | admin (admin composer, trusted)
+ *   title         short title (manual / admin)
+ *   request_type  bug | feature (manual / admin)
+ *   request_body  admin composer markdown, passed to Hermes verbatim
+ *   contact       optional contact of a manual report: admin-only, never public,
+ *                 never in a job, a PR or the board card
+ */
+export const SOURCES = ["reporter", "manual", "admin"];
+function ensureRequestColumns(database) {
+  const have = new Set(database.prepare(`PRAGMA table_info(incidents)`).all().map((c) => c.name));
+  const add = [
+    ["source", "TEXT NOT NULL DEFAULT 'reporter'"],
+    ["title", "TEXT"],
+    ["request_type", "TEXT"],
+    ["request_body", "TEXT"],
+    ["contact", "TEXT"],
+  ];
+  for (const [name, decl] of add) if (!have.has(name)) database.exec(`ALTER TABLE incidents ADD COLUMN ${name} ${decl}`);
+  database.exec(`CREATE INDEX IF NOT EXISTS idx_incidents_source ON incidents(source)`);
+}
+
+/**
+ * Manual report (public form) or admin request (composer): a new incident with
+ * an explicit source. Never enqueues anything itself.
+ */
+export function createRequestIncident({ source, title, requestType, body, logsExcerpt = null, contact = null, targetRepo = null, unit = null }) {
+  if (source !== "manual" && source !== "admin") throw new Error("invalid_source");
+  const database = getDb();
+  const now = new Date().toISOString();
+  const hash = `${source}-${crypto.randomUUID()}`;
+  const info = database
+    .prepare(
+      `INSERT INTO incidents (report_hash, unit, logs_excerpt, severity, target_hint, target_repo, status, class,
+        source, title, request_type, request_body, contact, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      hash,
+      unit,
+      logsExcerpt,
+      source === "manual" ? "warning" : "info",
+      targetRepo,
+      targetRepo,
+      source === "admin" ? "software" : "unknown",
+      source,
+      title,
+      requestType,
+      source === "admin" ? body : null,
+      source === "manual" ? contact : null,
+      now,
+      now,
+    );
+  const incident = database.prepare(`SELECT * FROM incidents WHERE id = ?`).get(info.lastInsertRowid);
+  addIncidentEvent(
+    incident.id,
+    "ingest",
+    source === "manual" ? "Manual report (public form, untrusted): waits for a human" : "Admin request (composer)",
+    { source, request_type: requestType },
+  );
+  return incident;
 }
 
 export function addIncidentEvent(incidentId, kind, message, meta = null) {

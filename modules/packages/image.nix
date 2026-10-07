@@ -30,7 +30,7 @@
           && !(lib.hasSuffix ".sqlite-wal" path)
           && !(lib.hasSuffix ".sqlite-shm" path);
       };
-      npmDepsHash = "sha256-K7kfQXv5uUYlKoPptypA5nvUrlQWLVVNl4APXKDhyZI=";
+      npmDepsHash = "sha256-RUQxKFqXeLPvVOn7ooKrWZVNqGdZp58/Dhsxv9MC3Sw=";
       inherit nodejs;
       dontNpmBuild = true;
       nativeBuildInputs = [python3 pkg-config removeReferencesTo];

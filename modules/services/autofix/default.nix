@@ -123,6 +123,7 @@
               ADMIN_ENABLED = boolStr cfg.admin.enabled;
               ADMIN_PATH = adminPath;
               ADMIN_READ_ONLY = boolStr cfg.admin.readOnly;
+              OPS_PUBLIC_REPORTS = boolStr cfg.publicReports.enable;
             };
           # Host EnvironmentFile → container env (OPS_REDACT_EXTRA_SLUGS). The file
           # must exist when set, or docker --env-file fails.

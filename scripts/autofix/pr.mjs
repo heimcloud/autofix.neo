@@ -25,9 +25,9 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { findIdentifierHits, redactIdentifyingDetails } from "./redact.js";
-import { normalizeLabReport, keepUnitNames } from "./lab-checks.js";
-import { LOGIN_RE, forkOwner } from "./targets.js";
+import { findIdentifierHits, redactIdentifyingDetails } from "../../app/lib/redact.js";
+import { normalizeLabReport, keepUnitNames } from "../../app/lib/lab-checks.js";
+import { LOGIN_RE, forkOwner } from "../../app/lib/targets.js";
 
 const TRUE = ["1", "true", "yes", "on"];
 const clampInt = (v, lo, hi, d) => {
@@ -308,6 +308,8 @@ export function newRecord(cfg, job, pr, extra = {}) {
       class: job.class,
       neo_version: job.neo_version,
       logs_excerpt: job.logs_excerpt,
+      ...(job.source ? { source: job.source } : {}),
+      ...Object.fromEntries(["request_title", "request_type", "request_body"].filter((k) => typeof job[k] === "string" && job[k]).map((k) => [k, job[k]])),
       pr_title: job.pr_title,
       pr_body: job.pr_body,
     },
@@ -795,7 +797,7 @@ export function discoverPrs(cfg, deps) {
       if (!rvCache.has(target.upstream)) rvCache.set(target.upstream, resolveReviewers(tcfg, target));
       const rv = rvCache.get(target.upstream);
       const pr = prSummary(p);
-      const job = { incident_id: inc.id, branch: p.head.ref, report_hash: inc.report_hash, unit: inc.unit, severity: inc.severity, class: inc.class, neo_version: inc.neo_version, logs_excerpt: inc.logs_excerpt, pr_title: String(p.title || "").slice(0, 300), pr_body: String(p.body || "").slice(0, 20000) };
+      const job = { incident_id: inc.id, branch: p.head.ref, report_hash: inc.report_hash, unit: inc.unit, severity: inc.severity, class: inc.class, neo_version: inc.neo_version, logs_excerpt: inc.logs_excerpt, ...(inc.source ? { source: inc.source } : {}), ...Object.fromEntries(["request_title", "request_type", "request_body"].filter((k) => typeof inc[k] === "string" && inc[k]).map((k) => [k, inc[k]])), pr_title: String(p.title || "").slice(0, 300), pr_body: String(p.body || "").slice(0, 20000) };
       const rec = { ...newRecord({ ...tcfg, trustedReviewers: rv.reviewers }, job, pr, { adopted_by: "discovery", untested: null }), baseline_pending: true };
       if (rv.idChanged.length) rec.halted_pending = rv.idChanged[0];
       writeRecord(cfg, rec);

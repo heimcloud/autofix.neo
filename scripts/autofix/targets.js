@@ -1,1 +1,0 @@
-../../app/lib/targets.js

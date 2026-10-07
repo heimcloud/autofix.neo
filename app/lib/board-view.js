@@ -91,6 +91,8 @@ export function buildCardModel(incident, events, attempts, redact, opts = {}) {
     repo,
     summary: truncate(summaryFull, 150),
     summaryFull,
+    source: ["manual", "admin"].includes(incident.source) ? incident.source : "reporter",
+    requestType: incident.request_type === "feature" ? "feature" : incident.request_type === "bug" ? "bug" : "",
     created: formatLocal(incident.created_at),
     updated: formatLocal(incident.updated_at),
     age: ageLabel(incident.created_at, now),
@@ -125,6 +127,7 @@ export function buildCardModel(incident, events, attempts, redact, opts = {}) {
   model.searchText = [
     `#${model.id}`,
     model.summaryFull,
+    model.source === "reporter" ? "" : model.source,
     model.unit,
     model.klass,
     model.severity,
@@ -253,6 +256,10 @@ export function buildDrawerModel(incident, events, attempts, redact, opts = {}) 
     labSummary: fm.lab === "failed" || fm.lab === "passed" || fm.lab === "skipped" ? truncate(redact(fm.summary || ""), 600) : "",
     triage: t ? { verdict: t.verdict, confidence: t.confidence, legacy: t.legacy } : null,
     logsExcerpt: truncate(redact(incident.logs_excerpt || ""), 2000),
+    // Admin-only drawer: the private contact of a manual report and the
+    // composer request (both never on the card, the public page or a job's PR).
+    contact: incident.source === "manual" ? truncate(String(incident.contact || ""), 200) : "",
+    requestBody: incident.source === "admin" ? String(incident.request_body || "") : "",
     events: evs,
     attemptsTable: attempts.map((a) => {
       const m = parse(a) || {};
@@ -383,6 +390,14 @@ function moveForm(base, card, caps) {
 
 // ------------------------------------------------------------------- card
 
+/** Visible origin badge: manual (public, untrusted) and admin requests. */
+export function sourceBadge(source, requestType = "") {
+  const t = requestType ? ` ${esc(requestType)}` : "";
+  if (source === "manual") return `<span class="chip src-badge src-manual" title="Public form: untrusted, never enqueued automatically">manual${t} · untrusted</span>`;
+  if (source === "admin") return `<span class="chip src-badge src-admin" title="Admin composer request">admin${t}</span>`;
+  return "";
+}
+
 export function renderCard(card, base, caps, { hidden = false } = {}) {
   const sevCls = severityClass(card.severity);
   const draggable = !caps.readOnly && card.allowedMoves.length > 0;
@@ -409,6 +424,7 @@ export function renderCard(card, base, caps, { hidden = false } = {}) {
     <div class="kc-top">
       <a class="kc-id" href="${esc(`${base}/incidents/${card.id}/drawer`)}" data-open="${card.id}">#${card.id}</a>
       <span class="chip sev ${sevCls}">${esc(card.severity || "n/a")}</span>
+      ${sourceBadge(card.source, card.requestType)}
       ${doneTag}
       <span class="kc-age" title="Created ${esc(card.created)} (${esc(TZ_LABEL)})">${esc(card.age)}</span>
     </div>
@@ -714,7 +730,9 @@ export function renderDrawer(d, base, caps) {
       ${d.labRun ? renderLabReport(d.labRun) : d.labSummary ? `<section><h3>Lab-test result</h3><p class="mono">${esc(d.labSummary)}</p></section>` : ""}
       <section><h3>Fix attempts <span class="muted">(${d.attemptsTable.length})</span></h3>${attempts}</section>
       <section><h3>Events <span class="muted">newest first · ${esc(TIME_ZONE)}</span></h3>${events}</section>
-      ${d.logsExcerpt ? `<details class="dr-logs"><summary>Logs excerpt (redacted)</summary><pre>${esc(d.logsExcerpt)}</pre></details>` : ""}
+      ${d.source === "manual" ? `<p class="dr-src src-manual">${sourceBadge("manual", d.requestType)} Submitted via the public form. Untrusted: never enqueued automatically; triage or start a fix by hand.${d.contact ? ` Contact (private): <span class="mono">${esc(d.contact)}</span>` : ""}</p>` : ""}
+      ${d.requestBody ? `<details class="dr-logs" open><summary>Admin request (verbatim to Hermes)</summary><pre>${esc(d.requestBody)}</pre></details>` : ""}
+      ${d.logsExcerpt ? `<details class="dr-logs"><summary>${d.source === "manual" ? "Report (redacted)" : "Logs excerpt (redacted)"}</summary><pre>${esc(d.logsExcerpt)}</pre></details>` : ""}
       <p class="dr-foot muted"><a href="${esc(`${base}/incidents/${d.id}`)}">Full record / edit class &amp; target</a> (unredacted staff view)</p>
     </div>
   </div>`;

@@ -273,3 +273,16 @@ test("kick: failed/start-limit units + pending jobs -> reset-failed and start; s
   delete process.env.FAKE_SVC_STATE;
   delete process.env.FAKE_PATH_STATE;
 });
+
+test("manual (untrusted) report: a job not started by an admin is refused before Hermes; an admin-started one runs", () => {
+  const bad = enqueue("triage", 7, 1, { source: "manual", enqueued_by: "auto" });
+  const missing = enqueue("triage", 8, 2, { source: "manual" });
+  W.main([]);
+  assert.ok(fs.existsSync(path.join(Q, "failed", `triage-${bad}`)), "auto-enqueued manual job refused");
+  assert.ok(fs.existsSync(path.join(Q, "failed", `triage-${missing}`)), "manual job without enqueued_by refused");
+  assert.ok(!fs.existsSync(path.join(tmp, "order")) || !order().some((n) => n === 7 || n === 8), "Hermes never ran for them");
+  const ok = enqueue("triage", 9, 3, { source: "manual", enqueued_by: "admin" });
+  W.main([]);
+  assert.ok(fs.existsSync(path.join(Q, "done", `triage-${ok}`)));
+  assert.ok(order().includes(9));
+});

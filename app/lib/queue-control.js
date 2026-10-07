@@ -2,8 +2,8 @@
  * Autofix queue control: priority ordering, pause flag, cancel flags.
  *
  * Shared by the ops app (container, writes control files) and the host worker
- * (reads them before every claim). Byte-identical copies live in app/lib and
- * scripts/autofix (a test enforces it); only node builtins may be imported.
+ * (reads them before every claim). One copy in app/lib; scripts/autofix imports
+ * it as ../../app/lib/queue-control.js. Only node builtins may be imported.
  *
  * Layout under <queue root> (= $OPS_DATA_DIR/queue):
  *   <kind>/<incident>-<ts>.json        pending job (kind = triage | fix | push | lab | pr)

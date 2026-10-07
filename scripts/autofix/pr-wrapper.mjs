@@ -45,8 +45,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadTargets, findTarget, forkOwner, validRef, LOGIN_RE } from "./targets.js";
-import { findIdentifierHits, getExtraRedactSlugs } from "./redact.js";
+import { loadTargets, findTarget, forkOwner, validRef, LOGIN_RE } from "../../app/lib/targets.js";
+import { findIdentifierHits, getExtraRedactSlugs } from "../../app/lib/redact.js";
 
 export const CODEOWNERS_PATHS = ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"];
 export const BRANCH_RE = /^(fix|ops)\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;

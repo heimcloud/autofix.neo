@@ -40,10 +40,10 @@ import {
   labApprovalMessage,
   normalizePathPrefixes,
   describeProtected,
-} from "./lab-checks.js";
-import { redactIdentifyingDetails, getExtraRedactSlugs } from "./redact.js";
-import { cancelRequested } from "./queue-control.js";
-import { parseTargets, findTarget, readTargetsFile, DEFAULT_TARGETS_FILE } from "./targets.js";
+} from "../../app/lib/lab-checks.js";
+import { redactIdentifyingDetails, getExtraRedactSlugs } from "../../app/lib/redact.js";
+import { cancelRequested } from "../../app/lib/queue-control.js";
+import { parseTargets, findTarget, readTargetsFile, DEFAULT_TARGETS_FILE } from "../../app/lib/targets.js";
 
 const SELF = fileURLToPath(import.meta.url);
 const SAFE_ENV_DROP = ["GH_TOKEN", "GITHUB_TOKEN", "GH_PR_TOKEN", "OPS_GITHUB_TOKEN", "NIX_CONFIG"];

@@ -126,6 +126,56 @@ set `subdomain`; keep an old host name with `customDomains`), set the token in
 warnings means nothing is left to move. A leftover `[services.ops]` table is
 no longer read at all.
 
+## Public page and manual reports
+
+`/` (unauthenticated, same look as the board) explains what the desk does and
+shows aggregate metrics only: incidents received, received in the last 30 days,
+fixed (`resolved`), open, and the median time from report to resolved. There are
+no hosts, slugs, reporter ids, titles or excerpts. The numbers are cached for 60 s
+(`/metrics.json` serves the same data).
+
+The page also has a **bug / feature report form** (`publicReports.enable`,
+default **true**):
+
+- Reports land on the board as `source = manual` with a **manual · untrusted**
+  badge, status `open`. They are **never enqueued automatically**: no auto-triage
+  on ingest (even with `triage.autoEnqueue`), the queue refuses an automatic
+  trigger for them, and the worker refuses a manual triage/fix job that an admin
+  did not start. Triage or start a fix from the card by hand.
+- Abuse protection:
+  - 5 POSTs per 10 min per client IP (in memory). X-Forwarded-For is honoured
+    only from a trusted peer: loopback plus private ranges, i.e. SWAG on the
+    Docker network; override with `OPS_TRUST_PROXY`.
+  - 50 stored reports per day in total.
+  - Limits: 16 KiB body, title 120, description 8000, contact 200 characters.
+  - A honeypot field, a minimum fill time of 3 s and a no-JS arithmetic
+    question, all bound to an HMAC-signed, single-use form token.
+- The text is redacted server-side (same redactor as everything else) before
+  it is stored, and HTML-escaped on every render.
+- The optional contact is stored privately. It is shown only in the admin
+  drawer, never on the card, in a job or in a PR.
+
+```toml
+[services.autofix]
+publicReports.enable = false   # hide the form (the page and metrics stay)
+```
+
+## Feature / bug request composer (admin)
+
+`/admin/request` (nav: **New request**): a title, feature or bug, a target from
+the configured targets, and a large markdown textarea with a live preview.
+Submitting it creates a trusted `source = admin` incident and queues a **fix
+job** right away, so the normal loop follows: Hermes codes it, then the lab
+test, the PR and the review rounds. Protected paths still need approval, and
+the target must be on the allowlist. CSRF: the same same-origin guard as every
+admin POST.
+
+The markdown (max 64 KiB) reaches Hermes **verbatim**: it is stored as
+`request_body`, carried unredacted by every job of the incident (fix, lab, lab
+retry, revise) and written into the prompt file, so there are no argv limits.
+What leaves the host (commits, PR title/body) still goes through the redaction
+gates.
+
 ## Schema
 
 ### `incidents`
@@ -139,6 +189,8 @@ no longer read at all.
 | `status` | `open` \| `triaged` \| `fixing` \| `testing` \| `needs_human` \| `pr_opened` \| `resolved` \| `closed` |
 | `class` | `software` \| `human_config` \| `unknown` |
 | `draft_pr_url`, `draft_pr_number`, `draft_branch` | tested branch / PR preparation metadata |
+| `source` | `reporter` (ingest API) \| `manual` (public form, untrusted) \| `admin` (composer); added in place on upgrade |
+| `title`, `request_type`, `request_body`, `contact` | manual / admin requests (`request_body` admin only, `contact` manual only, private) |
 | `created_at`, `updated_at` | ISO text |
 
 ### `incident_events`
@@ -244,6 +296,14 @@ Old triage results without `verdict` are mapped from `class` + `fixable` (human_
 | Pause / Resume | `queue/control/paused.json`; the worker checks it between jobs and never kills a running job | — |
 
 ## Run locally
+
+The tree has no symlinks and no build outputs: `scripts/autofix/*.mjs` import
+the one copy of the shared modules from `app/lib`, and the worker package keeps
+that layout in the store. `nix flake check` fails on any tracked symlink,
+artifact (node_modules, `result*`, logs, editor/OS files) or file over 512 KiB
+(`checks.repo-hygiene`). It also runs the built worker (`checks.worker-smoke`).
+Optional pre-commit hook:
+`ln -s ../../scripts/dev/check-no-symlinks.sh .git/hooks/pre-commit`.
 
 ```bash
 cd app
