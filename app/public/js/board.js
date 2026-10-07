@@ -113,6 +113,16 @@
       }
     } else target.prepend(fresh);
     if (oldCard && oldCard.classList.contains("selected")) fresh.classList.add("selected");
+    // Keep an open "More" toggle open (and a typed PR number) across live re-renders.
+    const oldMore = oldCard && oldCard.querySelector("details.kc-more");
+    const freshMore = fresh.querySelector("details.kc-more");
+    if (oldMore && freshMore && oldMore.open) {
+      freshMore.open = true;
+      const ov = oldMore.querySelector("input.adopt-num");
+      const nv = freshMore.querySelector("input.adopt-num");
+      if (ov && nv && ov.value) nv.value = ov.value;
+      if (ov && nv && document.activeElement === ov) nv.focus();
+    }
     wireCard(fresh);
     applyFilters(state, { persist: false });
     if (flash) {

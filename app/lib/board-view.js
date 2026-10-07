@@ -392,7 +392,15 @@ export function renderCard(card, base, caps, { hidden = false } = {}) {
       ? `<span class="chip tag-${esc(card.status)}">${esc(card.statusLabel.toLowerCase())}</span>`
       : "";
   const shown = card.actions.filter((a) => a !== "close" || card.reasons[0]?.action === "close").slice(0, 3);
-  const actions = shown.map((a) => actionForm(base, card, a, caps, { compact: true })).join("");
+  // Rarely used: "Adopt PR" (number input + button) lives behind a "More" toggle
+  // (native <details>, no JS; board.js keeps it open across live re-renders).
+  const more = card.actions.includes("adopt_pr") ? actionForm(base, card, "adopt_pr", caps, { compact: true }) : "";
+  const actions =
+    shown
+      .filter((a) => a !== "adopt_pr")
+      .map((a) => actionForm(base, card, a, caps, { compact: true }))
+      .join("") +
+    (more ? `<details class="kc-more"><summary title="More actions" aria-label="More actions for #${card.id}">More</summary><div class="kc-more-body">${more}</div></details>` : "");
   return `<article class="kcard ${sevCls}${card.needed ? " needs" : ""}" id="incident-${card.id}"
     data-id="${card.id}" data-status="${esc(card.status)}" data-sev="${esc(card.severity)}"
     data-class="${esc(card.klass)}" data-unit="${esc(card.unit)}" data-repo="${esc(card.repo)}"

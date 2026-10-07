@@ -167,7 +167,7 @@
         cd /
         export PATH=${makeBinPath (filter isDerivation workerPath)}:/run/current-system/sw/bin
         unset OPS_DATA_DIR
-        export NEO_AUTOFIX_UNIT_ENV=${workerEnvJson}
+        export NEO_AUTOFIX_UNIT_ENV=/etc/neo-autofix/worker-env.json
         exec ${workerPkg}/bin/neo-autofix-worker --check-token "$@"
       '';
 

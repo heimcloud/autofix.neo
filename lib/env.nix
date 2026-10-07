@@ -10,11 +10,6 @@
   owners = lib.unique (lib.concatMap (t: map (s: lib.head (lib.splitString "/" s)) [t.upstream t.fork]) targets);
   hostName = config.networking.hostName or "";
   hostnames = lib.unique (lib.filter (h: h != "") ([hostName] ++ cfg.redact.hostnames));
-  legacyToken = let
-    cred = config.neo.services.credentials or {};
-    tok = cred.ops.autofixForkPushToken or null;
-  in
-    (cred.enabled or false) && tok != null && tok != "";
 in {
   forkOwner =
     if targets == []
@@ -31,8 +26,7 @@ in {
   tokenConfigured =
     cfg.github.tokenFile
     != null
-    || (cfg.github.token != null && cfg.github.token != "")
-    || legacyToken;
+    || (cfg.github.token != null && cfg.github.token != "");
   redactEnv = lib.filterAttrs (_: v: v != "") {
     OPS_PUBLIC_OWNERS = lib.concatStringsSep "," owners;
     OPS_REDACT_HOSTNAMES = lib.concatStringsSep "," hostnames;

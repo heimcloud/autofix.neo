@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Extract the autofix GitHub token from Neo's settings.toml.
 
-Key: services.autofix.github.token. Older hosts kept the token in the
-credentials plugin (services.credentials.ops.autofixForkPushToken); that key
-is still read for one release, with a warning on stderr.
+Key: services.autofix.github.token.
 
 Reads TOML at runtime so the value is never interpolated into Nix derivations
 by this plugin. Prints the token to stdout only (no trailing commentary).
@@ -23,7 +21,6 @@ except ImportError:  # pragma: no cover
 
 
 KEY_PATH = ("services", "autofix", "github", "token")
-LEGACY_PATHS = (("services", "credentials", "ops", "autofixForkPushToken"),)
 
 
 def dig(data: object, path: tuple[str, ...]) -> object:
@@ -56,17 +53,6 @@ def main() -> int:
         return 0
     value = dig(data, KEY_PATH)
     key = ".".join(KEY_PATH)
-    if value is None or (isinstance(value, str) and not value.strip()):
-        for legacy in LEGACY_PATHS:
-            lv = dig(data, legacy)
-            if isinstance(lv, str) and lv.strip():
-                print(
-                    f"neo-autofix: WARNING token read from the deprecated key {'.'.join(legacy)}; "
-                    f"move it to {key} (or github.tokenFile)",
-                    file=sys.stderr,
-                )
-                value, key = lv, ".".join(legacy)
-                break
     if value is None:
         return 0
     if not isinstance(value, str):

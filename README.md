@@ -110,29 +110,21 @@ Checks after activation:
 
 ```bash
 sudo neo-autofix-check     # token kind, push + PR access, with the worker unit's user/env/PATH
-neo-autofix-pr --check
+neo-autofix-pr --check     # as hermes only; other users get a hint to use sudo neo-autofix-check
 systemctl list-timers | grep neo-autofix
 curl -fsS https://autofix.<your domain>/health
 ```
 
 ## Coming from `[services.ops]`
 
-This plugin is the successor of an earlier plugin that used the `services.ops`
-namespace. For one release `[services.ops]` settings still work (with a
-warning): they are mapped onto `[services.autofix]`, data stays in
-`AppData/ops` and the subdomain stays `ops`. Every `[[services.ops.targets]]`
-entry needs a `fork` now, and there is no built-in target. Do not install both
-plugins at once (evaluation fails on purpose). The old
-`services.credentials.ops.autofixForkPushToken` key is still read (with a
-warning) until `github.token` / `github.tokenFile` is set.
-
-Every key of the older plugin is carried over (an explicit `[services.autofix]`
-key wins), including `customDomains`, `ingress`, `auth`, `vpn`, `admin`,
-`appdata` and all `autofix.lab.*` / `autofix.pr.*` settings; `denyPaths`,
-`basePaths`, `neoBaseRef`, `lab.input` and `lab.flakeUrl` move onto the neo
-target, `reviewerLogin` / `reviewerId` become `pr.reviewers` +
-`pr.pinnedReviewerIds`. `githubToken`, `siteUrl`, `targetAllowlist` and
-`containers` are ignored with a warning; any other unknown key is warned too.
+The `[services.ops]` alias of v0.1.x is gone in v0.2.0, and so is the old
+`services.credentials.ops.autofixForkPushToken` token key. Move every setting
+to `[services.autofix]` before upgrading (the subdomain is `autofix` unless you
+set `subdomain`; keep an old host name with `customDomains`), set the token in
+`github.token` / `github.tokenFile`, and move `AppData/ops` to
+`AppData/autofix` (or set `appdata`). With v0.1.x installed, 0 evaluation
+warnings means nothing is left to move. A leftover `[services.ops]` table is
+no longer read at all.
 
 ## Schema
 
@@ -262,10 +254,10 @@ OPS_DB_PATH=./data/ops.sqlite OPS_INGEST_SECRET=devsecret \
 npm test
 ```
 
-`npm test` runs the app/worker suite (191 tests, synthetic data only; it needs
+`npm test` runs the app/worker suite (the full suite, synthetic data only; it needs
 loopback HTTP, so it is not part of the sandboxed flake checks). `nix flake
-check` runs the token-script tests and NixOS evaluation tests (new namespace,
-legacy alias, assertions).
+check` runs the token-script tests and NixOS evaluation tests (namespace,
+assertions).
 
 Environment of the container (rendered by the module): `OPS_INGEST_SECRET` /
 `OPS_INGEST_SECRET_FILE`, `OPS_DB_PATH`, `OPS_DATA_DIR`, `OPS_TARGETS`,

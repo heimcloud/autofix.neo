@@ -2,7 +2,7 @@
 # Materialize the autofix GitHub token → tmpfs token file. Source:
 #   NEO_AUTOFIX_TOKEN_SOURCE (github.tokenFile, a root-readable file), else
 #   services.autofix.github.token in settings.toml (read at runtime, never
-#   copied into the Nix store; legacy credentials key still accepted).
+#   copied into the Nix store).
 #
 # Result: $TOKEN_DIR 0700 owner:group, $TOKEN_FILE 0400 owner:group (hermes).
 # Idempotent; safe to re-run on every activation / `systemctl start`.

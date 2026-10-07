@@ -327,6 +327,13 @@ test("open failure (HTTP 403): never PR open without a number; needs_human 'Open
   assert.match(html, /action="\/admin\/incidents\/\d+\/open-pr"/);
   assert.match(html, /Retry open PR/);
   assert.match(html, /action="\/admin\/incidents\/\d+\/adopt-pr"[\s\S]*name="pr_number"/);
+  // Adopt PR sits behind a closed "More" toggle; the other actions stay outside it.
+  assert.match(html, /<details class="kc-more"><summary[^>]*>More<\/summary><div class="kc-more-body"><form class="act-form adopt-form"[\s\S]*name="pr_number"[\s\S]*<\/form><\/div><\/details>/);
+  assert.doesNotMatch(html, /<details class="kc-more" open/);
+  const outside = html.replace(/<details class="kc-more">[\s\S]*<\/details>/, "");
+  assert.doesNotMatch(outside, /adopt-pr|pr_number/);
+  assert.match(outside, /Retry open PR/);
+  assert.match(outside, /Move to/);
   await withAdmin(async (port) => {
     const r = await request(port, "POST", `/admin/incidents/${inc.id}/open-pr`);
     assert.equal(r.status, 200, r.body);

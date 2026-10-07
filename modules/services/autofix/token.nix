@@ -1,8 +1,7 @@
 # GitHub token of the autofix loop → tmpfs (/run/neo-autofix/github-token).
 #
 # Source: github.tokenFile (copied), else services.autofix.github.token read
-# from the live settings.toml at activation time (one release: also the old
-# services.credentials.ops.autofixForkPushToken key, with a warning). The value
+# from the live settings.toml at activation time. The value
 # is never interpolated into a derivation, Environment= or unit text.
 #
 # Ships neo-autofix-env (per-process git credential helper scoped to

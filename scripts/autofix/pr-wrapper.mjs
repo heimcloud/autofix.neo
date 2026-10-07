@@ -253,6 +253,21 @@ export function apiBase(env = process.env) {
   refuse("OPS_PR_API_BASE may only point to http://127.0.0.1 or localhost");
 }
 
+/** Why there is no token: not readable by this user (→ sudo neo-autofix-check) or really missing. */
+export function noTokenMessage(file, uid = process.getuid?.()) {
+  const hint = "run `sudo neo-autofix-check` (runs the check as hermes with the worker environment)";
+  let exists = false;
+  try {
+    fs.statSync(file);
+    exists = true;
+  } catch (e) {
+    if (e?.code === "EACCES") exists = true;
+  }
+  if (exists) return `token file not readable by this user; ${hint}`;
+  if (uid !== 0 && !fs.existsSync(path.dirname(file))) return `token file not visible to this user (or not materialized); ${hint}`;
+  return `token file missing (github.token / github.tokenFile not set or neo-autofix-token not run); ${hint}`;
+}
+
 export function readToken(file) {
   let fd;
   try {
@@ -317,8 +332,9 @@ export async function checkMode(env = process.env) {
   const targets = loadTargets(env);
   const botLogin = env.OPS_PR_BOT_LOGIN || forkOwner(targets);
   const base = apiBase(env);
-  const token = readToken(env.OPS_PR_TOKEN_FILE || "/run/neo-autofix/github-token");
-  if (!token) return { code: 4, out: { api_ok: false, push_ok: false, pr_ok: false, no_token: true, messages: ["token file missing or unreadable"] } };
+  const tokenFile = env.OPS_PR_TOKEN_FILE || "/run/neo-autofix/github-token";
+  const token = readToken(tokenFile);
+  if (!token) return { code: 4, out: { api_ok: false, push_ok: false, pr_ok: false, no_token: true, messages: [noTokenMessage(tokenFile)] } };
   const u = await call(base, token, "GET", "/user");
   const scopes = u.scopes == null ? [] : String(u.scopes).split(",").map((x) => x.trim()).filter(Boolean);
   const kind = tokenKind(token, u.scopes);

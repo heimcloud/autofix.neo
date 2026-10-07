@@ -154,6 +154,9 @@ export function workerModel({ redact = (s) => s, now = Date.now(), caps = {} } =
   const hbAge = hb == null ? null : Math.max(0, (now - hb) / 1000);
   let state = v2 ? safeToken(st.state) : "unknown";
   if (!["idle", "running", "paused"].includes(state)) state = "unknown";
+  // worker-status.json keeps "paused" from its last run until the next one;
+  // the pause flag (control/paused.json) is the truth once it is cleared.
+  if (state === "paused" && !pause) state = "idle";
   const stale = state === "running" && (hbAge == null || hbAge > staleSec);
   const job = state === "running" && st.job && typeof st.job === "object" ? st.job : null;
   const jobModel = job

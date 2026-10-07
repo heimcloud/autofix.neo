@@ -52,17 +52,10 @@ if [[ -n "$got2" ]]; then
 fi
 echo "missing key → empty ok"
 
-echo "== extract legacy key (one release) =="
+echo "== removed credentials key is ignored =="
 printf '[services.credentials.ops]\nautofixForkPushToken = "%s"\n' "$DUMMY" > "$TMP/legacy.toml"
-got3="$("$EXTRACT" "$TMP/legacy.toml" 2>"$TMP/legacy.err")"
-[[ "$got3" == "$DUMMY" ]] || { echo "FAIL: legacy key not read" >&2; exit 1; }
-grep -q "deprecated key" "$TMP/legacy.err" || { echo "FAIL: no deprecation warning" >&2; exit 1; }
-if grep -qF "$DUMMY" "$TMP/legacy.err"; then echo "FAIL: token on stderr" >&2; exit 1; fi
-# The new key wins over the legacy one.
-printf '[services.autofix.github]\ntoken = "ghp_NEWKEY_DUMMY_0000000000000000000"\n[services.credentials.ops]\nautofixForkPushToken = "%s"\n' "$DUMMY" > "$TMP/both.toml"
-[[ "$("$EXTRACT" "$TMP/both.toml" 2>/dev/null)" == ghp_NEWKEY_DUMMY_* ]] || { echo "FAIL: new key must win" >&2; exit 1; }
-unset got3
-echo "legacy key ok (warning, new key wins)"
+[[ -z "$("$EXTRACT" "$TMP/legacy.toml" 2>/dev/null)" ]] || { echo "FAIL: old key must be ignored" >&2; exit 1; }
+echo "old key ignored ok"
 
 echo "== materialize (real script) =="
 # Run scripts/autofix/materialize.sh with the local user as owner (no hermes).

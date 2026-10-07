@@ -196,6 +196,14 @@ code, .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, mono
 .kc-need svg { flex: none; margin-top: 1px; }
 .kc-actions { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.4rem; align-items: center; }
 .kc-actions form { margin: 0; display: contents; }
+.kc-more { display: inline-block; position: relative; }
+.kc-more[open] { flex-basis: 100%; }
+.kc-more > summary { display: inline-block; list-style: none; cursor: pointer; font-size: 0.75rem; padding: 0.1rem 0.45rem; border: 1px solid var(--line, #ccc); border-radius: 0.3rem; color: var(--muted, #666); user-select: none; }
+.kc-more > summary::-webkit-details-marker { display: none; }
+.kc-more > summary::after { content: " ▾"; }
+.kc-more[open] > summary::after { content: " ▴"; }
+.kc-more-body { display: flex; gap: 0.25rem; align-items: center; margin-top: 0.25rem; }
+.kc-more-body .adopt-num { width: 5.5rem; }
 .move-form { display: flex !important; gap: 0.25rem; }
 .move-select {
   width: auto !important; height: 24px; margin: 0 !important; padding: 0 1.2rem 0 0.35rem !important; font-size: 0.72rem !important;

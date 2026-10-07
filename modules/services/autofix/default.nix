@@ -9,7 +9,7 @@
   }:
     with lib; let
       cfg = config.neo.services.autofix;
-      # Host data dir (internal option `appdata`; the legacy alias keeps …/ops).
+      # Host data dir (internal option `appdata`).
       opsAppdata = cfg.appdata;
       appImage = self.packages.${pkgs.stdenv.hostPlatform.system}.neo-autofix;
       # The container runs as the Neo core user, the uid/gid every other Neo
