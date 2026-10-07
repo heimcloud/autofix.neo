@@ -1,6 +1,6 @@
 {
   "name": "neo-autofix",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "neo-autofix \u2014 incident ingest, triage, autofix PR loop and admin board (Neo plugin)",
   "type": "module",

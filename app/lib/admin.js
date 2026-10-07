@@ -278,7 +278,7 @@ export function createAdminRouter() {
           <button class="btn" type="submit">Start fix</button>`
             : `<div class="card">
           <p><strong>Start fix unavailable:</strong> autofix is not enabled on this host
-             (<code>neo.services.ops.autofix.enable</code> + <code>autofix.fix.enable</code>), so no worker would pick up the job.</p>`
+             (<code>[services.autofix] autofix.enable</code> + <code>autofix.fix.enable</code>), so no worker would pick up the job.</p>`
         }
           ${
             incident.draft_pr_url

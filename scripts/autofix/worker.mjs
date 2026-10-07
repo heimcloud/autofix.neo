@@ -1638,7 +1638,7 @@ export function prCapability(cfg, { force = false } = {}) {
 /** PR automation usable for this run (enabled + token present + token can open PRs). */
 function prReady(cfg) {
   if (!cfg.prOn) return { ok: false, reason: "PR automation is off (autofix.pr.enable)" };
-  if (!prTokenPresent(cfg)) return { ok: false, reason: "GitHub token missing (autofixForkPushToken)" };
+  if (!prTokenPresent(cfg)) return { ok: false, reason: "GitHub token missing ([services.autofix.github] token / tokenFile)" };
   const cap = prCapability(cfg);
   if (!cap.pr_ok && !cap.check_error) {
     return {

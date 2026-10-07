@@ -202,7 +202,7 @@ export function enqueueJob(kind, incident, extra = {}) {
   if (!isAutofixKindEnabled(kind)) {
     throw new QueueError(
       "autofix_disabled",
-      `Autofix ${kind} is not enabled on this host (neo.services.ops.autofix.enable + autofix.${kind}.enable); no worker would pick up the job.`,
+      `Autofix ${kind} is not enabled on this host ([services.autofix] autofix.enable + autofix.${kind}.enable); no worker would pick up the job.`,
     );
   }
   // A fix never runs next to a lab test of the same incident.
@@ -216,7 +216,7 @@ export function enqueueJob(kind, incident, extra = {}) {
   if (kind === "fix" && incident.target_repo && !isRepoAllowed(incident.target_repo)) {
     throw new QueueError(
       "unknown_target",
-      `Target repo ${String(incident.target_repo).slice(0, 120)} is not allowlisted (services.ops.targets); set an allowlisted target on the incident first.`,
+      `Target repo ${String(incident.target_repo).slice(0, 120)} is not allowlisted ([[services.autofix.targets]]); set an allowlisted target on the incident first.`,
     );
   }
   const job = buildJobPayload(kind, incident, extra);
@@ -249,7 +249,7 @@ export function enqueuePushJob(incident, jobName) {
   if (!isAutofixKindEnabled("push")) {
     throw new QueueError(
       "autofix_disabled",
-      "Autofix fix is not enabled on this host (neo.services.ops.autofix.enable + autofix.fix.enable); no worker would push the saved fix.",
+      "Autofix fix is not enabled on this host ([services.autofix] autofix.enable + autofix.fix.enable); no worker would push the saved fix.",
     );
   }
   const pending = findPendingJobs("push", incident.id);

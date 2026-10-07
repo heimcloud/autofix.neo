@@ -381,7 +381,7 @@ export function needsHumanInput(incident, events = [], attempts = [], opts = {})
         reasons.push(reason("no_lab_method", `No lab method for ${String(fm.target_repo || "this repo")}: test by hand`, ["skip_lab", "close"], fm.summary));
       } else if (fm?.unknown_target || (!fm && triage?.meta?.target_unknown)) {
         const t = fm?.unknown_target || triage.meta.target_unknown;
-        reasons.push(reason("unknown_target", `Unknown target repo (${t}): not allowlisted`, ["start_fix", "close"], "Triage or the job named a repo outside services.ops.targets. Set an allowlisted target repo on the incident (or add the repo to the allowlist), then Start fix."));
+        reasons.push(reason("unknown_target", `Unknown target repo (${t}): not allowlisted`, ["start_fix", "close"], "Triage or the job named a repo outside [[services.autofix.targets]]. Set an allowlisted target repo on the incident (or add the repo to the allowlist), then Start fix."));
       } else if (fm?.status === "lab_approval_needed") {
         // Protected path (ops / Hermes / swag / base system on the shared
         // ops/lab host): pushed, the lab test waits for the admin. The badge

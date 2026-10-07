@@ -161,7 +161,7 @@ export function applyResult(result0) {
   }
   if (kind === "triage" || result.type === "triage") {
     const klass = result.class || incident.class;
-    // Target must be allowlisted (services.ops.targets); an unknown repo is
+    // Target must be allowlisted ([[services.autofix.targets]]); an unknown repo is
     // never stored and the incident waits for a human.
     const targetOk = result.target_repo && isRepoAllowed(result.target_repo);
     const unknownTarget = result.target_unknown || (result.target_repo && !targetOk) ? String(result.target_unknown || result.target_repo).slice(0, 120) : null;

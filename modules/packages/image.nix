@@ -12,7 +12,7 @@
 
     app = buildNpmPackage {
       pname = "neo-autofix";
-      version = "0.2.0";
+      version = "0.2.1";
       src = lib.cleanSourceWith {
         src = self + "/app";
         filter = path: type: let
