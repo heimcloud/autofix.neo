@@ -9,10 +9,14 @@
     inherit (pkgs) dockerTools buildNpmPackage nodejs_22 python3 pkg-config sqlite cacert tzdata fakeNss srcOnly removeReferencesTo;
     nodejs = nodejs_22;
     nodeSources = srcOnly nodejs;
+    # One version source: app/package.json. Bumping it (and package-lock.json)
+    # changes the npm-deps hash; `nix flake check` builds checks.npm-deps, so a
+    # stale npmDepsHash fails CI/release instead of a host build.
+    pkgJson = builtins.fromJSON (builtins.readFile (self + "/app/package.json"));
 
     app = buildNpmPackage {
       pname = "neo-autofix";
-      version = "0.2.1";
+      inherit (pkgJson) version;
       src = lib.cleanSourceWith {
         src = self + "/app";
         filter = path: type: let
@@ -26,7 +30,7 @@
           && !(lib.hasSuffix ".sqlite-wal" path)
           && !(lib.hasSuffix ".sqlite-shm" path);
       };
-      npmDepsHash = "sha256-v/lj7+UuOhh9pySUBj+xGdCXGNKc93lAbZOXtBjOEmU=";
+      npmDepsHash = "sha256-K7kfQXv5uUYlKoPptypA5nvUrlQWLVVNl4APXKDhyZI=";
       inherit nodejs;
       dontNpmBuild = true;
       nativeBuildInputs = [python3 pkg-config removeReferencesTo];
@@ -83,6 +87,12 @@
     packages = {
       inherit neo-autofix;
       default = neo-autofix;
+    };
+    # Release guard: the fixed-output npm-deps derivation and the app build run
+    # in `nix flake check` (a version bump without a new npmDepsHash fails here).
+    checks = {
+      npm-deps = app.npmDeps;
+      app-build = app;
     };
   };
 }

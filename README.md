@@ -256,7 +256,9 @@ npm test
 
 `npm test` runs the app/worker suite (the full suite, synthetic data only; it needs
 loopback HTTP, so it is not part of the sandboxed flake checks). `nix flake
-check` runs the token-script tests and NixOS evaluation tests (namespace,
+check` builds the npm-deps fixed-output derivation and the app (`checks.npm-deps`,
+`checks.app-build`; a version bump in `app/package.json` / `package-lock.json` needs a new
+`npmDepsHash` in `modules/packages/image.nix`), and runs the token-script tests and NixOS evaluation tests (namespace,
 assertions).
 
 Environment of the container (rendered by the module): `OPS_INGEST_SECRET` /
