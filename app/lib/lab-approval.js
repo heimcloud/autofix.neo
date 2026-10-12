@@ -14,8 +14,8 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { getDataDir, queueDir, ensureDir, findPendingJobs, isAutofixKindEnabled, QueueError, redactedIncidentFields } from "./queue.js";
-import { labApprovalMessage, normalizeProtected } from "./lab-checks.js";
-import { addIncidentEvent, updateIncident, getLatestIncidentEvent } from "./db.js";
+import { labApprovalMessage, normalizeProtected, activeLabApproval, uncoveredAreas } from "./lab-checks.js";
+import { addIncidentEvent, updateIncident, listIncidentEventsOfKinds } from "./db.js";
 import { loadTargets, findTarget } from "./targets.js";
 
 export class ApprovalKeyError extends Error {
@@ -170,26 +170,31 @@ export function protectedRetrySource(incident, job) {
   };
 }
 
+/** Events that decide whether an incident's lab approval is in force. */
+export const APPROVAL_EVENT_KINDS = ["lab_approved", "lab_approval_revoked", "admin_update"];
+
 /**
- * The admin approval that still covers this protected fix, or null: the
- * latest lab_approved event of the incident for the same branch and revise
- * round, no admin Start fix / Skip since, and no protected area (or base
- * system) the admin did not approve. A new revise round needs a new approval.
+ * The admin approval that still covers this protected fix (its lab_approved
+ * event), or null: one approval per incident across branches, revise rounds
+ * and retries, until revoked or the incident is closed / resolved, and only
+ * while the fix stays within the protected areas (and base system) approved.
  */
 export function stickyApproval(incident, src) {
   if (!incident || !src || src.no_lab_method || !src.protected) return null;
-  const a = getLatestIncidentEvent(incident.id, "lab_approved");
-  const m = a?.meta;
-  if (!m || m.approved_by !== "admin" || m.branch !== src.branch) return null;
-  if ((m.revise_round ?? null) !== (src.revise_round ?? null)) return null;
-  for (const kind of ["fix_enqueued", "lab_skipped"]) {
-    const e = getLatestIncidentEvent(incident.id, kind);
-    if (e && Number(e.id) > Number(a.id)) return null;
-  }
-  const was = normalizeProtected(m.protected);
-  if (!was || (src.protected.core && !was.core)) return null;
-  if (!src.protected.areas.every((x) => was.areas.includes(x))) return null;
-  return a;
+  if (["closed", "resolved"].includes(incident.status)) return null;
+  const active = activeLabApproval(listIncidentEventsOfKinds(incident.id, APPROVAL_EVENT_KINDS));
+  if (!active || uncoveredAreas(active, src.protected).length) return null;
+  return active.event;
+}
+
+/** Admin revoke: the incident's approval no longer carries (next protected lab test asks again). */
+export function revokeLabApproval(incident) {
+  const active = activeLabApproval(listIncidentEventsOfKinds(incident.id, APPROVAL_EVENT_KINDS));
+  if (!active) throw refuse("no_lab_approval", `Incident #${incident.id} has no lab approval in force.`);
+  return addIncidentEvent(incident.id, "lab_approval_revoked", `Admin revoked the lab approval (#${active.event.id}; areas: ${active.areas.join(", ")}${active.core ? ", base system" : ""}); the next protected lab test needs a new approval`, {
+    by: "admin",
+    revoked_event_id: Number(active.event.id),
+  });
 }
 
 export function approveProtectedLab(incident, src, { now = new Date(), reuse = null } = {}) {
@@ -210,7 +215,7 @@ export function approveProtectedLab(incident, src, { now = new Date(), reuse = n
     incident.id,
     "lab_approved",
     reuse
-      ? `Admin approval #${reuse.id} still holds (same branch${src.revise_round ? `, round ${src.revise_round}` : ""}): lab test of protected change (${src.protected.label}) at ${String(src.head_sha).slice(0, 12)} queued as ${instance}`
+      ? `Admin approval #${Number(reuse.meta?.reused_approval || reuse.id)} for this incident still holds: lab test of protected change (${src.protected.label}) at ${src.branch} ${String(src.head_sha).slice(0, 12)} queued as ${instance}`
       : `Admin approved the lab test of protected change (${src.protected.label})${src.protected.core ? " — BASE SYSTEM" : ""}; lab job ${instance} queued`,
     {
       job_file: name,
@@ -224,7 +229,7 @@ export function approveProtectedLab(incident, src, { now = new Date(), reuse = n
       fix_event_id: src.event_id,
       revise_round: src.revise_round,
       target_repo: src.target_repo,
-      reused_approval: reuse ? Number(reuse.id) : undefined,
+      reused_approval: reuse ? Number(reuse.meta?.reused_approval || reuse.id) : undefined,
     },
   ).id);
   try {

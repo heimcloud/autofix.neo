@@ -398,6 +398,15 @@ export function getLatestIncidentEvent(incidentId, kind) {
   return { ...row, meta };
 }
 
+/** All events of the given kinds for one incident (oldest first, no limit). */
+export function listIncidentEventsOfKinds(incidentId, kinds) {
+  const k = [...kinds].map(String);
+  if (!k.length) return [];
+  return getDb()
+    .prepare(`SELECT * FROM incident_events WHERE incident_id = ? AND kind IN (${k.map(() => "?").join(", ")}) ORDER BY id ASC`)
+    .all(incidentId, ...k);
+}
+
 export function listIncidentEvents(incidentId, { limit = 100 } = {}) {
   const lim = Math.min(Math.max(Number(limit) || 100, 1), 500);
   return getDb()

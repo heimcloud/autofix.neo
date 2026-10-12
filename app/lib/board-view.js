@@ -313,6 +313,11 @@ function actionForm(base, card, action, caps, { compact = false } = {}) {
     path += "/retry-lab";
     hidden = "";
     confirm = `Rerun the lab test of the same fix branch for incident #${id}? (a protected change keeps your approval; activates the branch on the lab host, then rolls back)`;
+  } else if (action === "revoke_lab") {
+    if (!caps.lab) return "";
+    path += "/revoke-lab-approval";
+    hidden = "";
+    confirm = `Revoke the lab approval for incident #${id}? The next protected lab test asks again.`;
   } else if (action === "approve_lab") {
     if (!caps.lab) return "";
     path += "/approve-lab";

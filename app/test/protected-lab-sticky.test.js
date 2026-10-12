@@ -1,8 +1,9 @@
 /**
- * Protected lab approval sticks to the incident (v0.3.1): an admin approval
- * covers the automatic lab-retry attempts of the same branch / revise round,
- * a lab-failed protected card offers "Rerun lab test" (approval kept, fresh
- * signature), and a new revise round still needs a new approval.
+ * Protected lab approval sticks to the incident (v0.3.1, v0.3.2): one admin
+ * approval covers retries, new branches and revise rounds of the incident
+ * (fresh signed single-use job each time); a lab-failed protected card offers
+ * "Rerun lab test"; a protected area outside the approved set, an admin
+ * revoke or a Close still need a new approval.
  * Synthetic data only.
  */
 import { test, after } from "node:test";
@@ -54,13 +55,13 @@ const hi = (id) => B.needsHumanInput(db.getIncident(id), events(id), db.listFixA
 const labDir = path.join(tmpDir, "queue", "lab");
 const labJobs = (id) => fs.readdirSync(labDir).filter((f) => f.startsWith(`${id}-`) && f.endsWith(".json"));
 
-function needsApproval(id, { attempt = 1, sha = "e", round } = {}) {
+function needsApproval(id, { attempt = 1, sha = "e", round, branch, prot = PROT } = {}) {
   applyResult({
     kind: "fix",
     incident_id: id,
     status: "lab_approval_needed",
     lab: "awaiting_approval",
-    branch: `fix/sticky-${id}`,
+    branch: branch || `fix/sticky-${id}`,
     job: `fix-${id}-2026-01-01T00-00-0${attempt}-000Z`,
     fix_job: `fix-${id}-2026-01-01T00-00-0${attempt}-000Z`,
     attempt,
@@ -71,8 +72,8 @@ function needsApproval(id, { attempt = 1, sha = "e", round } = {}) {
     pr_title: "fix: agent",
     pr_body: "body",
     ...(round ? { pr_number: 7, revise_round: round } : {}),
-    protected: PROT,
-    summary: "Protected path (hermes): approve lab test.",
+    protected: prot,
+    summary: "Protected path: approve lab test.",
   });
 }
 /** Worker claims the queued lab job, the runner verifies it, the lab fails. */
@@ -151,7 +152,7 @@ test("approve → lab fails → retry fix touches the protected path again → t
   // Out of attempts: Rerun lab test (approval kept) next to Start fix.
   const r = hi(inc.id).reasons[0];
   assert.equal(r.code, "lab_failed");
-  assert.deepEqual(r.actions, ["rerun_lab", "start_fix", "close"]);
+  assert.deepEqual(r.actions, ["rerun_lab", "start_fix", "revoke_lab", "close"]);
   await withAdmin(async (port) => {
     const x = await post(port, `/admin/incidents/${inc.id}/retry-lab`);
     assert.equal(x.status, 200, x.body);
@@ -165,26 +166,64 @@ test("approve → lab fails → retry fix touches the protected path again → t
   await runAndFail(inc.id, { retry: false });
 });
 
-test("a new revise round (new diff) still needs a new approval, and the card says so", async () => {
-  const inc = db.upsertIncident({ report_hash: "sticky-2", unit: "docker-hermes.service", severity: "high", logs_excerpt: "agent crashed" }).incident;
+const approveFirst = async (key) => {
+  const inc = db.upsertIncident({ report_hash: key, unit: "docker-hermes.service", severity: "high", logs_excerpt: "agent crashed" }).incident;
   needsApproval(inc.id);
   await withAdmin(async (port) => assert.equal((await post(port, `/admin/incidents/${inc.id}/approve-lab`)).status, 200));
-  await runAndFail(inc.id, { retry: false });
-  needsApproval(inc.id, { sha: "c", round: 1 });
-  assert.equal(db.getIncident(inc.id).status, "needs_human");
-  const r = hi(inc.id).reasons[0];
-  assert.equal(r.code, "lab_approval");
-  assert.match(r.label, /new diff since your last approval/);
-  assert.deepEqual(r.actions, ["approve_lab", "skip_lab", "close"]);
+  const first = await runAndFail(inc.id, { retry: false });
+  return { inc, first };
+};
+
+test("one approval per incident: a new branch and a new revise round carry it (fresh signed job each)", async () => {
+  const { inc, first } = await approveFirst("sticky-2");
+  needsApproval(inc.id, { sha: "c", branch: `fix/other-${inc.id}` });
+  assert.equal(db.getIncident(inc.id).status, "testing", "new branch: no second approval card");
+  const second = await runAndFail(inc.id, { retry: false });
+  needsApproval(inc.id, { sha: "b", round: 1 });
+  assert.equal(db.getIncident(inc.id).status, "testing", "revise round: no second approval card");
+  const third = await runAndFail(inc.id, { retry: false });
+  assert.equal(new Set([first, second, third]).size, 3);
+  const reused = events(inc.id).filter((e) => e.kind === "lab_approved").slice(1).map((e) => JSON.parse(e.meta_json).reused_approval);
+  assert.deepEqual(reused, [first, first], "always points at the admin's own approval");
+  // Admin Start fix does not end it any more.
+  db.addIncidentEvent(inc.id, "fix_enqueued", "Fix job enqueued for host worker", { job_kind: "fix" });
+  needsApproval(inc.id, { sha: "a" });
+  assert.equal(db.getIncident(inc.id).status, "testing");
 });
 
-test("Start fix by the admin drops the approval", async () => {
-  const inc = db.upsertIncident({ report_hash: "sticky-3", unit: "docker-hermes.service", severity: "high", logs_excerpt: "agent crashed" }).incident;
-  needsApproval(inc.id);
+test("a protected area outside the approved set needs a new approval; the card names it", async () => {
+  const { inc } = await approveFirst("sticky-3");
+  needsApproval(inc.id, { sha: "c", prot: { areas: ["hermes", "swag"], paths: ["nix/services/hermes", "nix/services/swag"], core: false, label: "hermes, swag" } });
+  assert.equal(db.getIncident(inc.id).status, "needs_human");
+  let r = hi(inc.id).reasons[0];
+  assert.equal(r.code, "lab_approval");
+  assert.match(r.label, /outside your approval \(new: swag\)/);
+  assert.deepEqual(r.outside, ["swag"]);
+  assert.deepEqual(r.actions, ["approve_lab", "skip_lab", "close"]);
+  needsApproval(inc.id, { sha: "b", prot: { ...PROT, core: true } });
+  assert.match(hi(inc.id).reasons[0].label, /new: base system/);
+  // Approving widens the set; afterwards both areas carry.
   await withAdmin(async (port) => assert.equal((await post(port, `/admin/incidents/${inc.id}/approve-lab`)).status, 200));
   await runAndFail(inc.id, { retry: false });
-  db.addIncidentEvent(inc.id, "fix_enqueued", "Fix job enqueued for host worker", { job_kind: "fix" });
-  needsApproval(inc.id, { sha: "b" });
+  needsApproval(inc.id, { sha: "a", prot: { ...PROT, core: true } });
+  assert.equal(db.getIncident(inc.id).status, "testing");
+});
+
+test("admin revoke ends the approval; so does Close", async () => {
+  const { inc } = await approveFirst("sticky-4");
+  assert.ok(hi(inc.id).reasons[0].actions.includes("revoke_lab"));
+  await withAdmin(async (port) => {
+    const r = await post(port, `/admin/incidents/${inc.id}/revoke-lab-approval`);
+    assert.equal(r.status, 200, r.body);
+    assert.equal((await post(port, `/admin/incidents/${inc.id}/revoke-lab-approval`)).status, 409);
+  });
+  needsApproval(inc.id, { sha: "c" });
   assert.equal(db.getIncident(inc.id).status, "needs_human");
-  assert.equal(hi(inc.id).reasons[0].code, "lab_approval");
+  assert.match(hi(inc.id).reasons[0].label, /approval ended/);
+
+  const b = await approveFirst("sticky-5");
+  db.addIncidentEvent(b.inc.id, "admin_update", "status needs_human -> closed (closed)", { from: "needs_human", to: "closed", action: "close" });
+  db.addIncidentEvent(b.inc.id, "admin_update", "status closed -> open", { from: "closed", to: "open", action: "move" });
+  needsApproval(b.inc.id, { sha: "c" });
+  assert.equal(db.getIncident(b.inc.id).status, "needs_human");
 });

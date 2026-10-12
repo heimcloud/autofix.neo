@@ -340,6 +340,43 @@ export function normalizeProtected(p) {
 }
 
 /**
+ * The admin's protected-lab approval still in force for an incident, from its
+ * events (any order; rows with meta or meta_json), or null. One approval per
+ * incident: it carries across branches, revise rounds and retries until an
+ * explicit revoke (lab_approval_revoked) or a Close / Resolve. Covered set =
+ * union of the areas (and base system) the admin approved since then.
+ */
+export function activeLabApproval(events) {
+  const meta = (e) => e.meta || (() => {
+    try {
+      return JSON.parse(e.meta_json || "null");
+    } catch {
+      return null;
+    }
+  })() || {};
+  const list = [...(events || [])].sort((a, b) => Number(a.id) - Number(b.id));
+  let cur = null;
+  for (const e of list) {
+    const m = meta(e);
+    if (e.kind === "lab_approval_revoked" || (e.kind === "admin_update" && ["closed", "resolved"].includes(m.to))) cur = null;
+    else if (e.kind === "lab_approved" && m.approved_by === "admin") {
+      const p = normalizeProtected(m.protected);
+      if (!p) continue;
+      cur = { event: { ...e, meta: m }, areas: [...new Set([...(cur?.areas || []), ...p.areas])], core: Boolean(cur?.core || p.core) };
+    }
+  }
+  return cur;
+}
+
+/** Protected areas of `prot` the active approval does not cover ("base system" for core). */
+export function uncoveredAreas(active, prot) {
+  const p = normalizeProtected(prot);
+  if (!p) return [];
+  if (!active) return [...p.areas, ...(p.core ? ["base system"] : [])];
+  return [...p.areas.filter((a) => !active.areas.includes(a)), ...(p.core && !active.core ? ["base system"] : [])];
+}
+
+/**
  * Canonical message the app signs (HMAC-SHA256, key only the ops container
  * uid can read) when an admin approves a protected lab test. The root runner
  * recomputes it from the job spec + its own instance name.

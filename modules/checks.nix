@@ -183,6 +183,16 @@
         if badExpect == []
         then pkgs.runCommand "autofix-eval-tests" {} "echo ${toString (builtins.length allExpect)} expectations ok > $out"
         else throw "autofix eval tests failed: ${lib.concatMapStringsSep ", " builtins.head badExpect}";
+      # Lab runner build env: the root runner opens the owner's config repo
+      # (git safe.directory for exactly that path, never "*").
+      lab-git-safe = pkgs.runCommand "autofix-lab-git-safe" {nativeBuildInputs = [pkgs.nodejs_22 pkgs.git];} ''
+        export HOME=$TMPDIR
+        cp -r ${self} src
+        chmod -R u+w src
+        cd src/app
+        node --test test/lab-git-safe.test.js
+        echo ok > $out
+      '';
       token-scripts =
         pkgs.runCommand "autofix-token-tests" {
           nativeBuildInputs = [pkgs.bash pkgs.git pkgs.python3 pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.openssl pkgs.iproute2 pkgs.util-linux pkgs.shellcheck pkgs.getent];

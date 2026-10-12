@@ -26,6 +26,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import os from "node:os";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -587,7 +588,7 @@ export async function resolveLabTarget(cfg, spec) {
   const hook = (v) => (first && v ? v : null);
   let input = hook(cfg.input) || t.flakeInput;
   if (!input) {
-    const hm = await runCmd(cfg.nix, ["--extra-experimental-features", "nix-command flakes", "flake", "metadata", "--json", "--no-write-lock-file", cfg.flake], { timeoutSec: 300, graceSec: cfg.killGraceSec, cwd: cfg.flake });
+    const hm = await runCmd(cfg.nix, ["--extra-experimental-features", "nix-command flakes", "flake", "metadata", "--json", "--no-write-lock-file", cfg.flake], { timeoutSec: 300, graceSec: cfg.killGraceSec, cwd: cfg.flake, env: nixEnv(cfg) });
     let names = [];
     try {
       names = matchInputs(JSON.parse(hm.stdout).locks, [t.upstream, t.fork]);
@@ -656,7 +657,7 @@ export async function detectProtected(cfg, branch, headSha) {
   if (!cfg.labSharesOps || !cfg.protectedPaths.length) return { checked: false, hit: false, unknown: false, paths: [] };
   const nixArgs = ["--extra-experimental-features", "nix-command flakes"];
   const unknown = (detail) => ({ checked: true, hit: false, unknown: true, paths: [], detail });
-  const bm = await runCmd(cfg.nix, [...nixArgs, "flake", "metadata", "--json", pinnedFlakeUrl(cfg, branch, headSha)], { timeoutSec: 300, graceSec: cfg.killGraceSec, cwd: cfg.flake });
+  const bm = await runCmd(cfg.nix, [...nixArgs, "flake", "metadata", "--json", pinnedFlakeUrl(cfg, branch, headSha)], { timeoutSec: 300, graceSec: cfg.killGraceSec, cwd: cfg.flake, env: nixEnv(cfg) });
   let branchSrc;
   try {
     const j = JSON.parse(bm.stdout);
@@ -667,7 +668,7 @@ export async function detectProtected(cfg, branch, headSha) {
   } catch {
     return unknown(`nix flake metadata of the fork branch failed (exit ${bm.status})`);
   }
-  const hm = await runCmd(cfg.nix, [...nixArgs, "flake", "metadata", "--json", "--no-write-lock-file", cfg.flake], { timeoutSec: 300, graceSec: cfg.killGraceSec, cwd: cfg.flake });
+  const hm = await runCmd(cfg.nix, [...nixArgs, "flake", "metadata", "--json", "--no-write-lock-file", cfg.flake], { timeoutSec: 300, graceSec: cfg.killGraceSec, cwd: cfg.flake, env: nixEnv(cfg) });
   let locked;
   try {
     const locks = JSON.parse(hm.stdout).locks;
@@ -679,7 +680,7 @@ export async function detectProtected(cfg, branch, headSha) {
   const ev = await runCmd(cfg.nix, [...nixArgs, "eval", "--raw", "--expr", `(builtins.fetchTree (builtins.fromJSON ${nixString(JSON.stringify(locked))})).outPath`], {
     timeoutSec: 300,
     graceSec: cfg.killGraceSec,
-    cwd: cfg.flake,
+    cwd: cfg.flake, env: nixEnv(cfg),
   });
   const deployedSrc = String(ev.stdout || "").trim();
   for (const [name, p] of [["fork branch", branchSrc], ["deployed", deployedSrc]]) {
@@ -804,6 +805,56 @@ export function flakeUrlFor(cfg, branch) {
 }
 
 /**
+ * Environment for the runner's nix calls on the host config repo. The repo
+ * belongs to the config owner, not root, and Nix opens git+file inputs with
+ * libgit2, whose ownership check ("not owned by current user") only honours
+ * safe.directory from $HOME/.gitconfig (or the XDG/system files):
+ * GIT_CONFIG_GLOBAL and GIT_CONFIG_COUNT/KEY/VALUE are ignored. So: a
+ * runner-private HOME whose .gitconfig trusts exactly that one path (never
+ * "*"), only for these calls; root's ~/.gitconfig is never written. XDG
+ * config/cache stay root's so nix.conf, access tokens and the fetcher cache
+ * are unchanged.
+ */
+export function nixEnv(cfg, base = process.env) {
+  const repo = gitSafePath(cfg.flake);
+  const home = path.join(cfg.stateDir, "git-home");
+  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+  fs.chmodSync(home, 0o700);
+  const want = `# written by the lab runner: trust only the host config repo\n[safe]\n\tdirectory = ${repo}\n`;
+  const file = path.join(home, ".gitconfig");
+  let cur = null;
+  try {
+    cur = fs.readFileSync(file, "utf8");
+  } catch {
+    /* new */
+  }
+  if (cur !== want) {
+    const tmp = `${file}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, want, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  }
+  const realHome = base.HOME && base.HOME !== home ? base.HOME : os.homedir();
+  return {
+    ...base,
+    HOME: home,
+    XDG_CONFIG_HOME: base.XDG_CONFIG_HOME || path.join(realHome, ".config"),
+    XDG_CACHE_HOME: base.XDG_CACHE_HOME || path.join(realHome, ".cache"),
+  };
+}
+
+/** The config repo path as safe.directory value: absolute, resolved, no gitconfig syntax. */
+export function gitSafePath(p) {
+  let r = path.resolve(String(p || ""));
+  try {
+    r = fs.realpathSync(r);
+  } catch {
+    /* not there yet: nix reports it */
+  }
+  if (!path.isAbsolute(r) || r === "/" || /["\\\n\r\0;#*]/.test(r)) throw new Error(`refusing safe.directory for ${JSON.stringify(r)}`);
+  return r;
+}
+
+/**
  * Override URL pinned to the gated commit. A branch URL
  * (github:<fork>/<branch>) goes through root's Nix GitHub ref cache and can
  * resolve to an older tip; a commit URL is immutable. One-off
@@ -862,7 +913,7 @@ async function build(cfg, run, branch, sha) {
     pinnedFlakeUrl(cfg, branch, sha),
     attr,
   ];
-  const r = await runCmd(cfg.nix, args, { timeoutSec: cfg.buildSec, graceSec: cfg.killGraceSec, cwd: cfg.flake });
+  const r = await runCmd(cfg.nix, args, { timeoutSec: cfg.buildSec, graceSec: cfg.killGraceSec, cwd: cfg.flake, env: nixEnv(cfg) });
   const out = String(r.stdout || "").trim().split("\n").filter(Boolean).pop() || "";
   if (r.status === 0 && isSystemPath(cfg, out)) return { ok: true, toplevel: out };
   const text = `${r.stderr}\n${r.stdout}`;
@@ -883,7 +934,7 @@ async function resolvedRev(cfg, branch, sha) {
   const r = await runCmd(
     cfg.nix,
     ["--extra-experimental-features", "nix-command flakes", "flake", "metadata", "--json", "--no-write-lock-file", "--override-input", cfg.input, pinnedFlakeUrl(cfg, branch, sha), cfg.flake],
-    { timeoutSec: 300, graceSec: cfg.killGraceSec, cwd: cfg.flake },
+    { timeoutSec: 300, graceSec: cfg.killGraceSec, cwd: cfg.flake, env: nixEnv(cfg) },
   );
   if (r.status !== 0) return { rev: null, infra: true, detail: `nix flake metadata exit ${r.status}` };
   try {

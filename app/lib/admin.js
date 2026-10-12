@@ -46,7 +46,7 @@ import {
   NO_TOKEN_WARNING,
 } from "./queue.js";
 import { ingestResultsDir, pushRetryJob } from "./results.js";
-import { labApprovalSource, approveProtectedLab, skipProtectedLab, stickyApproval, protectedRetrySource } from "./lab-approval.js";
+import { labApprovalSource, approveProtectedLab, skipProtectedLab, stickyApproval, protectedRetrySource, revokeLabApproval } from "./lab-approval.js";
 import { startPrLoopValidation } from "./validation.js";
 import { registerQueueRoutes } from "./admin-queue.js";
 import { workerModel, queueModel } from "./worker-state.js";
@@ -565,6 +565,25 @@ export function createAdminRouter() {
       }
     };
   }
+  router.post("/incidents/:id/revoke-lab-approval", (req, res) => {
+    const base = req.adminBase;
+    const json = wantsJson(req);
+    if (ADMIN_READ_ONLY && json) return res.status(403).json({ ok: false, error: "read_only", message: "Admin is read-only (ADMIN_READ_ONLY)." });
+    if (refuseMutations(res, base)) return;
+    const id = Number(req.params.id);
+    const incident = getIncident(id);
+    if (!incident) return json ? res.status(404).json({ ok: false, error: "not_found" }) : res.status(404).send("Not found");
+    try {
+      revokeLabApproval(incident);
+      const msg = "Lab approval revoked";
+      if (json) return res.json({ ok: true, message: msg, ...cardPayload(id, base) });
+      return res.redirect(303, backTo(req, base, id, "msg", msg));
+    } catch (err) {
+      const message = err.message || "Revoke failed";
+      if (json) return res.status(err.status || 500).json({ ok: false, error: err.code || "revoke_failed", message, ...cardPayload(id, base) });
+      return res.redirect(303, backTo(req, base, id, "err", message));
+    }
+  });
   router.post("/incidents/:id/approve-lab", protectedLabHandler("approve"));
   router.post("/incidents/:id/skip-lab", protectedLabHandler("skip"));
   router.post("/incidents/:id/start-triage", enqueueHandler("triage"));
