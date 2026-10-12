@@ -8,7 +8,7 @@
     # Same layout as the repo (scripts/autofix + app/lib), so the scripts'
     # relative imports (../../app/lib/*.js) resolve in the store too. No
     # symlinks: app/lib is the one copy of the shared modules.
-    shared = ["redact.js" "compare.js" "queue-control.js" "lab-checks.js" "targets.js"];
+    shared = ["redact.js" "compare.js" "queue-control.js" "lab-checks.js" "targets.js" "pr-title.js"];
     scripts = ["worker.mjs" "labtest.mjs" "pr.mjs" "pr-wrapper.mjs" "push-guard.mjs"];
     workerSrc = pkgs.runCommand "neo-autofix-worker-src" {} ''
       mkdir -p $out/scripts/autofix $out/app/lib

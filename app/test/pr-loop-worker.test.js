@@ -154,7 +154,7 @@ test("validation run: doc-only branch → guarded push → lab → real PR; one 
   assert.match(files, /docs\/ops-autofix-validation\.md/);
   assert.equal(fs.existsSync(path.join(tmp, "last-fix-prompt.txt")), false, "no Hermes for the validation commit");
   const pr = state().pulls[1];
-  assert.equal(pr.title, "[validation] Autofix PR-loop check (incident #31) - DO NOT MERGE");
+  assert.equal(pr.title, "[validation] Autofix PR-loop check - DO NOT MERGE");
   assert.equal(pr.base.ref, "dev");
   assert.equal(pr.head.ref, "ops/validation-pr-loop-31");
   assert.equal(pr.draft, false);

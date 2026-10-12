@@ -189,6 +189,7 @@ test("fix job: branch pushed to fork with pinned identity, compare link against 
   assert.equal(r.status, "awaiting_lab_test", r.summary);
   assert.equal(r.lab, "skipped");
   assert.equal(r.branch, "fix/searxng-engines");
+  assert.equal(r.pr_title, "searxng/fix: drop stale engines", "unit/type: summary, no incident id");
   assert.equal(r.compare_url, "https://github.com/example-upstream/neo/compare/dev...example-bot:neo:fix/searxng-engines?expand=1");
   const author = execFileSync("git", ["-C", fork, "log", "-1", "--format=%an <%ae>|%cn <%ce>", "fix/searxng-engines"], { encoding: "utf8" }).trim();
   assert.equal(author, "example-bot <example-bot@users.noreply.github.com>|example-bot <example-bot@users.noreply.github.com>");

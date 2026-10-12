@@ -14,6 +14,7 @@
  * redaction gates, pushes the branch to the target's fork with
  * neo-autofix-env, runs the lab stage and (optionally) opens the upstream PR.
  */
+import { buildPrTitle } from "../../app/lib/pr-title.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -1199,6 +1200,26 @@ export function tokenAvailable(cfg) {
  * Deny-list + identity + redaction gates on base..HEAD. Returns
  * { ok:true, files } or { ok:false, result } (result fields to merge).
  */
+/**
+ * `<unit>/<fix|feat>: <summary>` from the incident unit (else the changed
+ * paths), the request type and the best redaction-clean summary (see
+ * app/lib/pr-title.js). No incident id, never generic.
+ */
+export const VALIDATION_PR_TITLE = "[validation] Autofix PR-loop check - DO NOT MERGE";
+export function prTitleFor(job, neoDir, baseSha, verdict = {}, slugs = []) {
+  // The synthetic PR-loop validation keeps its unmistakable marker.
+  if (job.validation === true) return VALIDATION_PR_TITLE;
+  const paths = baseSha ? git(neoDir, ["diff", "--name-only", `${baseSha}..HEAD`]).stdout.split("\n").filter(Boolean) : [];
+  const head = git(neoDir, ["log", "-1", "--format=%s"]).stdout.trim();
+  return buildPrTitle({
+    unit: job.unit,
+    paths,
+    requestType: job.request_type,
+    candidates: [verdict.pr_title, verdict.commit_message, baseSha ? head : "", job.request_title, verdict.summary],
+    slugs,
+  });
+}
+
 export function gateCommits(cfg, neoDir, baseSha, { branch, prTitle, prBody, slugs }) {
   try {
     buildCompareUrl(branch, cfg.compare || { base: cfg.baseRef }); // validates branch shape
@@ -1329,7 +1350,7 @@ export function validationCommit(neoDir, job, logPath) {
   const verdict = {
     status: "ready_to_push",
     branch,
-    pr_title: `[validation] Autofix PR-loop check (incident #${id}) - DO NOT MERGE`,
+    pr_title: VALIDATION_PR_TITLE,
     summary:
       "**Validation only, do not merge.** Adds one doc-only file to check the autofix loop end to end (push, lab test, PR, one review round). " +
       "To exercise the feedback loop, leave one review comment asking for a small wording change in that file.",
@@ -1428,7 +1449,7 @@ export function handleFix(cfg, job, ctx) {
     }
     // A revision stays on the PR branch whatever Hermes names.
     const branch = revise ? job.branch : String(verdict.branch || `ops/incident-${job.incident_id}`).trim();
-    const prTitle = revise && job.pr_title ? String(job.pr_title) : String(verdict.pr_title || `ops: incident #${job.incident_id} (${job.severity || "unspecified"})`);
+    const prTitle = revise && job.pr_title ? String(job.pr_title) : prTitleFor(job, neoDir, baseSha, verdict, slugs);
     const prBody = revise && job.pr_body
       ? String(job.pr_body)
       : [
@@ -2300,7 +2321,7 @@ export function rebuildPending(cfg, scratch) {
     report_hash: jobFile.report_hash || prior.report_hash || "",
     base_ref: baseRef,
     base_sha: baseSha,
-    pr_title: prior.pr_title || `ops: incident #${incidentId} (${severity})`,
+    pr_title: prior.pr_title || prTitleFor(jobFile, neoDir, baseSha, {}, slugs),
     pr_body:
       prior.pr_body ||
       [
