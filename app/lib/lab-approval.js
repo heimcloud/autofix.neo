@@ -15,7 +15,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { getDataDir, queueDir, ensureDir, findPendingJobs, isAutofixKindEnabled, QueueError, redactedIncidentFields } from "./queue.js";
 import { labApprovalMessage, normalizeProtected } from "./lab-checks.js";
-import { addIncidentEvent, updateIncident } from "./db.js";
+import { addIncidentEvent, updateIncident, getLatestIncidentEvent } from "./db.js";
 import { loadTargets, findTarget } from "./targets.js";
 
 export class ApprovalKeyError extends Error {
@@ -137,12 +137,69 @@ function writeJobAtomic(dest, job) {
  * it up) + signed lab job in queue/lab. Only this admin route writes approvals;
  * the worker refuses to enqueue a protected lab job itself.
  */
-export function approveProtectedLab(incident, src, { now = new Date() } = {}) {
+/**
+ * Rerun of a failed / errored protected lab job: the same fields as
+ * labApprovalSource, taken from the job file the worker moved to failed/
+ * (validated the same way), or null.
+ */
+export function protectedRetrySource(incident, job) {
+  if (!incident || !job || Number(job.incident_id) !== Number(incident.id)) return null;
+  const branch = String(job.branch || "");
+  if (!BRANCH_RE.test(branch) || branch.includes("..") || !SHA_RE.test(String(job.head_sha || ""))) return null;
+  const prot = normalizeProtected(job.protected);
+  const target = job.target_repo ? findTarget(loadTargets(), job.target_repo) : loadTargets()[0];
+  if (!prot || !target) return null;
+  const n = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 && Number(v) < 1e9 ? Number(v) : undefined);
+  return {
+    no_lab_method: false,
+    target_repo: target.upstream,
+    pr_number: n(job.pr_number) && n(job.revise_round) ? n(job.pr_number) : undefined,
+    revise_round: n(job.pr_number) && n(job.revise_round) ? n(job.revise_round) : undefined,
+    change_summary: job.change_summary && typeof job.change_summary === "object" ? job.change_summary : undefined,
+    event_id: undefined,
+    branch,
+    head_sha: job.head_sha,
+    base_sha: typeof job.base_sha === "string" && /^[0-9a-f]{7,64}$/.test(job.base_sha) ? job.base_sha : undefined,
+    fix_job: FIX_JOB_RE.test(String(job.fix_job || "")) ? job.fix_job : undefined,
+    attempt: Math.max(1, Math.floor(Number(job.attempt) || 1)),
+    max_attempts: Number(job.max_attempts) || undefined,
+    compare_url: COMPARE_RE.test(String(job.compare_url || "")) ? job.compare_url : undefined,
+    pr_title: typeof job.pr_title === "string" ? job.pr_title.slice(0, 300) : undefined,
+    pr_body: typeof job.pr_body === "string" ? job.pr_body.slice(0, 20000) : undefined,
+    protected: prot,
+  };
+}
+
+/**
+ * The admin approval that still covers this protected fix, or null: the
+ * latest lab_approved event of the incident for the same branch and revise
+ * round, no admin Start fix / Skip since, and no protected area (or base
+ * system) the admin did not approve. A new revise round needs a new approval.
+ */
+export function stickyApproval(incident, src) {
+  if (!incident || !src || src.no_lab_method || !src.protected) return null;
+  const a = getLatestIncidentEvent(incident.id, "lab_approved");
+  const m = a?.meta;
+  if (!m || m.approved_by !== "admin" || m.branch !== src.branch) return null;
+  if ((m.revise_round ?? null) !== (src.revise_round ?? null)) return null;
+  for (const kind of ["fix_enqueued", "lab_skipped"]) {
+    const e = getLatestIncidentEvent(incident.id, kind);
+    if (e && Number(e.id) > Number(a.id)) return null;
+  }
+  const was = normalizeProtected(m.protected);
+  if (!was || (src.protected.core && !was.core)) return null;
+  if (!src.protected.areas.every((x) => was.areas.includes(x))) return null;
+  return a;
+}
+
+export function approveProtectedLab(incident, src, { now = new Date(), reuse = null } = {}) {
   if (!isAutofixKindEnabled("lab")) {
     throw refuse("autofix_disabled", "Automated lab testing is not enabled on this host (autofix.lab.enable).");
   }
   if (!src || src.no_lab_method) throw refuse("no_lab_approval", `Incident #${incident.id} has no protected fix waiting for a lab approval.`);
-  const pending = [...findPendingJobs("lab", incident.id), ...findPendingJobs("fix", incident.id)];
+  // The fix job whose result is being ingested may still sit in processing/.
+  const self = src.fix_job ? `${src.fix_job}.json` : null;
+  const pending = [...findPendingJobs("lab", incident.id), ...findPendingJobs("fix", incident.id)].filter((f) => !(reuse && path.basename(f) === self));
   if (pending.length) throw refuse("already_queued", `A job for incident #${incident.id} is already queued or running (${path.basename(pending[0])}).`);
   const key = loadApprovalKey(); // fail before writing anything
   const ts = now.toISOString().replace(/[:.]/g, "-");
@@ -152,7 +209,9 @@ export function approveProtectedLab(incident, src, { now = new Date() } = {}) {
   const eventId = Number(addIncidentEvent(
     incident.id,
     "lab_approved",
-    `Admin approved the lab test of protected change (${src.protected.label})${src.protected.core ? " — BASE SYSTEM" : ""}; lab job ${instance} queued`,
+    reuse
+      ? `Admin approval #${reuse.id} still holds (same branch${src.revise_round ? `, round ${src.revise_round}` : ""}): lab test of protected change (${src.protected.label}) at ${String(src.head_sha).slice(0, 12)} queued as ${instance}`
+      : `Admin approved the lab test of protected change (${src.protected.label})${src.protected.core ? " — BASE SYSTEM" : ""}; lab job ${instance} queued`,
     {
       job_file: name,
       job_kind: "lab",
@@ -163,6 +222,9 @@ export function approveProtectedLab(incident, src, { now = new Date() } = {}) {
       approved_by: "admin",
       approved_at: approvedAt,
       fix_event_id: src.event_id,
+      revise_round: src.revise_round,
+      target_repo: src.target_repo,
+      reused_approval: reuse ? Number(reuse.id) : undefined,
     },
   ).id);
   try {

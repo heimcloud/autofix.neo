@@ -367,7 +367,8 @@ export function enqueueLabRetry(incident, prev) {
     pr_number: Number.isInteger(prev.pr_number) && Number.isInteger(prev.revise_round) ? prev.pr_number : undefined,
     revise_round: Number.isInteger(prev.pr_number) && Number.isInteger(prev.revise_round) ? prev.revise_round : undefined,
     // A protected job keeps its flag but never its approval: the worker turns
-    // it back into "approve lab test" (fresh admin approval, fresh signature).
+    // it back into "approve lab test" (the admin route re-signs it instead
+    // while the approval still holds, see stickyApproval).
     protected: prev.protected || prev.approval ? normalizeProtected(prev.protected) || { areas: ["unverified"], paths: [], core: false, label: "unverified" } : undefined,
     enqueued_at: new Date().toISOString(),
     enqueued_by: "admin",
@@ -399,7 +400,7 @@ export function labRetrySource(incident, latestFixEvent, latestCancelEvent = nul
   }
   const m = latestFixEvent?.meta;
   if (!m || m.via !== "lab") return null;
-  if (!(m.status === "lab_error" || (m.status === "awaiting_lab_test" && m.lab === "cancelled"))) return null;
+  if (!(m.status === "lab_error" || m.lab === "failed" || (m.status === "awaiting_lab_test" && m.lab === "cancelled"))) return null;
   const name = String(m.lab_job || "");
   if (!/^lab-\d+-[A-Za-z0-9-]+$/.test(name) || Number(name.split("-")[1]) !== Number(incident.id)) return null;
   const file = path.join(getDataDir(), "queue", "failed", `${name}.json`);

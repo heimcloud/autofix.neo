@@ -10,9 +10,11 @@ import {
   addFixAttempt,
   nextFixAttemptNumber,
   updateLatestFixAttempt,
+  getLatestIncidentEvent,
 } from "./db.js";
 import { resultsDir } from "./queue.js";
 import { isRepoAllowed } from "./github.js";
+import { labApprovalSource, stickyApproval, approveProtectedLab } from "./lab-approval.js";
 
 let lastDirWarning = "";
 
@@ -219,6 +221,19 @@ export function applyResult(result0) {
     result.via === "lab" && ["resolved", "closed"].includes(incident.status) ? incident.status : fixStatusToIncidentStatus(result.status);
   if (Object.keys(patch).length) updateIncident(id, patch);
   addIncidentEvent(id, "fix_result", result.summary || result.status || "Fix result", result);
+
+  // Protected again on a lab retry of an approved fix: the admin approval
+  // sticks (same branch / revise round), so queue a freshly signed lab job.
+  if (result.status === "lab_approval_needed" && patch.status === "needs_human") {
+    try {
+      const cur = getIncident(id);
+      const src = labApprovalSource(cur, getLatestIncidentEvent(id, "fix_result"));
+      const reuse = stickyApproval(cur, src);
+      if (reuse) approveProtectedLab(cur, src, { reuse });
+    } catch (err) {
+      console.error("[results] sticky lab approval", err.code || "", err.message);
+    }
+  }
 }
 
 const PR_URL_RE = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)$/;

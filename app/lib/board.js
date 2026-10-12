@@ -93,6 +93,7 @@ export const ACTIONS = {
   start_fix: "Start fix",
   retry_push: "Retry push",
   retry_lab: "Retry lab test",
+  rerun_lab: "Rerun lab test",
   approve_lab: "Approve lab test",
   skip_lab: "Skip lab (NOT lab-tested)",
   open_compare: "Open compare link",
@@ -387,7 +388,11 @@ export function needsHumanInput(incident, events = [], attempts = [], opts = {})
         // ops/lab host): pushed, the lab test waits for the admin. The badge
         // stays until he approves or skips.
         const p = protectedInfo(fm.protected);
-        const r = reason("lab_approval", `Protected path (${p.label}): approve lab test`, ["approve_lab", "skip_lab", "close"], fm.summary);
+        // An earlier approval that no longer covers this diff (new revise
+        // round, admin Start fix, wider protected area): say so on the card.
+        const prior = latestEvent(events, ["lab_approved"]);
+        const label = prior && prior.id < fix.id ? `Protected path (${p.label}): new diff since your last approval — approve lab test` : `Protected path (${p.label}): approve lab test`;
+        const r = reason("lab_approval", label, ["approve_lab", "skip_lab", "close"], fm.summary);
         r.protected = { label: p.label, core: p.core };
         reasons.push(r);
       } else if (fm?.services_unhealthy) {
@@ -403,7 +408,7 @@ export function needsHumanInput(incident, events = [], attempts = [], opts = {})
         reasons.push(reason("rollback_unverified", "Lab rollback NOT verified: check the host", ["mark_resolved"], fm.summary));
       } else if (fm?.lab === "failed") {
         reasons.push(
-          reason("lab_failed", `Lab test failed${nAttempts ? ` after ${nAttempts} attempt(s)` : ""}`, ["start_fix", "close"], fm.summary),
+          reason("lab_failed", `Lab test failed${nAttempts ? ` after ${nAttempts} attempt(s)` : ""}`, [...(fm.via === "lab" && fm.lab_job ? ["rerun_lab"] : []), "start_fix", "close"], fm.summary),
         );
       } else if (fm) {
         const max = Number(fm.max_attempts) || 0;

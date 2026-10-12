@@ -46,7 +46,7 @@ import {
   NO_TOKEN_WARNING,
 } from "./queue.js";
 import { ingestResultsDir, pushRetryJob } from "./results.js";
-import { labApprovalSource, approveProtectedLab, skipProtectedLab } from "./lab-approval.js";
+import { labApprovalSource, approveProtectedLab, skipProtectedLab, stickyApproval, protectedRetrySource } from "./lab-approval.js";
 import { startPrLoopValidation } from "./validation.js";
 import { registerQueueRoutes } from "./admin-queue.js";
 import { workerModel, queueModel } from "./worker-state.js";
@@ -508,12 +508,22 @@ export function createAdminRouter() {
       // The lab job comes from the DB (latest lab fix_result) + its failed/ file, never from the form.
       const src = labRetrySource(incident, getLatestIncidentEvent(id, "fix_result"), getLatestIncidentEvent(id, "job_cancelled"));
       if (!src) throw Object.assign(new Error(`Incident #${id} has no failed lab test to retry.`), { status: 409, code: "no_lab_job" });
-      const { path: jobPath } = enqueueLabRetry(incident, src.job);
-      const file = jobPath.split("/").pop();
-      if (incident.status !== "testing") updateIncident(id, { status: "testing" });
-      addIncidentEvent(id, "lab_enqueued", `Lab test re-enqueued (retry of ${src.name})`, { job_file: file, job_kind: "lab", retry_of: src.name });
-      if (json) return res.json({ ok: true, message: "Lab test re-enqueued", ...cardPayload(id, base) });
-      return res.redirect(303, backTo(req, base, id, "msg", "Lab test re-enqueued"));
+      // Protected: the admin approval of this branch sticks; a fresh signed
+      // job for the same head (the old signature is single-use).
+      const prot = src.job.protected || src.job.approval ? protectedRetrySource(incident, src.job) : null;
+      const reuse = prot ? stickyApproval(incident, prot) : null;
+      let msg = "Lab test re-enqueued";
+      if (reuse) {
+        approveProtectedLab(incident, prot, { reuse });
+        msg = `Lab test re-enqueued (protected: ${prot.protected.label}; approval kept)`;
+      } else {
+        const { path: jobPath } = enqueueLabRetry(incident, src.job);
+        const file = jobPath.split("/").pop();
+        if (incident.status !== "testing") updateIncident(id, { status: "testing" });
+        addIncidentEvent(id, "lab_enqueued", `Lab test re-enqueued (retry of ${src.name})`, { job_file: file, job_kind: "lab", retry_of: src.name });
+      }
+      if (json) return res.json({ ok: true, message: msg, ...cardPayload(id, base) });
+      return res.redirect(303, backTo(req, base, id, "msg", msg));
     } catch (err) {
       console.error("[admin] retry-lab", err.code || "", err.message);
       const message = err.message || "Retry lab failed";
