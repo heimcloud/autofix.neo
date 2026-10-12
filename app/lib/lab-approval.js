@@ -253,6 +253,8 @@ export function approveProtectedLab(incident, src, { now = new Date(), reuse = n
       pr_number: src.pr_number,
       revise_round: src.revise_round,
       change_summary: src.change_summary,
+      // Admin "Rerun lab test": a failure ends at the card, never a new Hermes attempt.
+      no_retry: src.no_retry === true || undefined,
       approved_by: "admin",
       approval: { v: 1, by: "admin", event_id: eventId, approved_at: approvedAt, sig },
       enqueued_at: approvedAt,

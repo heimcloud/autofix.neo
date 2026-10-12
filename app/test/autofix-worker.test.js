@@ -596,6 +596,25 @@ test("lab stage: push enqueues a lab job; pass → compare_ready with checks; He
   }
 });
 
+test("lab stage: an admin rerun (no_retry) that fails ends at the card; no Hermes fix is enqueued", () => {
+  labEnv(true);
+  try {
+    process.env.FAKE_LAB_VERDICT = "fail";
+    const name = enqueue("lab", 139, { branch: "fix/searxng-engines", attempt: 1, max_attempts: 2, head_sha: "a".repeat(40), no_retry: true, enqueued_by: "admin" });
+    W.main([]);
+    const labs = resultsFor("lab", 139);
+    assert.deepEqual(labs.map((r) => r.status), ["needs_human"]);
+    assert.equal(labs[0].lab, "failed");
+    assert.deepEqual(resultsFor("fix", 139), []);
+    assert.deepEqual(fs.readdirSync(path.join(data, "queue", "fix")).filter((f) => f.startsWith("139-")), []);
+    // The job of a lab run that reached a verdict is filed under done/ (the
+    // app's Rerun looks there too).
+    assert.ok(fs.existsSync(path.join(data, "queue", "done", `lab-${name}`)));
+  } finally {
+    labEnv(false);
+  }
+});
+
 test("lab stage: failure → retry fix with redacted evidence on the same branch, then needs_human (no compare link)", () => {
   labEnv(true);
   try {

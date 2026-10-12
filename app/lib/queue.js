@@ -339,7 +339,7 @@ const LAB_BRANCH = /^(fix|ops)\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
  * Re-enqueue a lab test from a previous lab job's payload (failed/ bucket).
  * Only whitelisted fields are copied; the plan is re-derived by the worker.
  */
-export function enqueueLabRetry(incident, prev) {
+export function enqueueLabRetry(incident, prev, { noRetry = false } = {}) {
   if (!isAutofixKindEnabled("lab")) {
     throw new QueueError("autofix_disabled", "Automated lab testing is not enabled on this host (autofix.lab.enable).");
   }
@@ -370,6 +370,7 @@ export function enqueueLabRetry(incident, prev) {
     // it back into "approve lab test" (the admin route re-signs it instead
     // while the approval still holds, see stickyApproval).
     protected: prev.protected || prev.approval ? normalizeProtected(prev.protected) || { areas: ["unverified"], paths: [], core: false, label: "unverified" } : undefined,
+    no_retry: noRetry || undefined,
     enqueued_at: new Date().toISOString(),
     enqueued_by: "admin",
   };
@@ -383,32 +384,66 @@ export function enqueueLabRetry(incident, prev) {
   return { path: dest, job };
 }
 
-/** Failed lab job (queue/failed/<lab_job>.json) named by the latest lab fix_result, if retryable. */
-export function labRetrySource(incident, latestFixEvent, latestCancelEvent = null) {
+/**
+ * Lab job to rerun, named by the latest lab fix_result, if retryable. The
+ * worker files a lab job that ran to a verdict (fail / pass) under done/ and
+ * one that errored or was cancelled under failed/, so look in both. When the
+ * file is gone (pruned), rebuild the job from the lab_approved event of that
+ * lab run (branch, head, protected areas), passed in as `labApprovals`.
+ */
+export function labRetrySource(incident, latestFixEvent, latestCancelEvent = null, { labApprovals = [] } = {}) {
   if (!incident) return null;
+  const read = (name) => {
+    for (const bucket of ["failed", "done"]) {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(getDataDir(), "queue", bucket, name), "utf8"));
+      } catch {
+        /* next */
+      }
+    }
+    return null;
+  };
   // A lab job cancelled while still pending (admin queue) never produced a
   // result: it sits in failed/lab-<name>.json.
   const c = latestCancelEvent?.meta;
   if (c && c.job_kind === "lab" && (!latestFixEvent || latestCancelEvent.id > latestFixEvent.id)) {
     const jf = String(c.job_file || "");
     if (!/^\d+-[A-Za-z0-9-]+\.json$/.test(jf) || Number(jf.split("-")[0]) !== Number(incident.id)) return null;
-    try {
-      return { name: `lab-${jf}`, job: JSON.parse(fs.readFileSync(path.join(getDataDir(), "queue", "failed", `lab-${jf}`), "utf8")) };
-    } catch {
-      return null;
-    }
+    const job = read(`lab-${jf}`);
+    return job ? { name: `lab-${jf}`, job } : null;
   }
   const m = latestFixEvent?.meta;
   if (!m || m.via !== "lab") return null;
   if (!(m.status === "lab_error" || m.lab === "failed" || (m.status === "awaiting_lab_test" && m.lab === "cancelled"))) return null;
   const name = String(m.lab_job || "");
   if (!/^lab-\d+-[A-Za-z0-9-]+$/.test(name) || Number(name.split("-")[1]) !== Number(incident.id)) return null;
-  const file = path.join(getDataDir(), "queue", "failed", `${name}.json`);
-  try {
-    return { name: `${name}.json`, job: JSON.parse(fs.readFileSync(file, "utf8")) };
-  } catch {
-    return null;
-  }
+  const job = read(`${name}.json`);
+  if (job) return { name: `${name}.json`, job };
+  const ev = [...labApprovals].reverse().find((e) => {
+    try {
+      return (e.meta || JSON.parse(e.meta_json || "{}")).lab_job === name;
+    } catch {
+      return false;
+    }
+  });
+  const a = ev ? ev.meta || JSON.parse(ev.meta_json || "{}") : null;
+  if (!a || a.branch !== m.branch || !/^[0-9a-f]{40}$/.test(String(a.head_sha || ""))) return null;
+  return {
+    name: `${name}.json`,
+    rebuilt: true,
+    job: {
+      incident_id: incident.id,
+      branch: a.branch,
+      head_sha: a.head_sha,
+      protected: a.protected,
+      target_repo: a.target_repo,
+      fix_job: m.job,
+      attempt: Number(m.attempts) || 1,
+      max_attempts: Number(m.max_attempts) || undefined,
+      pr_number: m.pr_number,
+      revise_round: a.revise_round ?? m.revise_round,
+    },
+  };
 }
 
 /**

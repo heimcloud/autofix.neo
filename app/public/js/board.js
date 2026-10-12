@@ -30,6 +30,26 @@
     setTimeout(() => el.remove(), ms);
   }
 
+  // Errors also stay next to where the admin clicked (drawer or card) until
+  // dismissed: a toast alone is easy to miss behind the drawer.
+  function stickyError(form, msg) {
+    const host = form.closest(".drawer") || form.closest(".kcard") || root;
+    host.querySelectorAll(":scope .act-error").forEach((a) => a.remove());
+    const el = document.createElement("div");
+    el.className = "alert err act-error";
+    el.setAttribute("role", "alert");
+    el.textContent = msg;
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "act-error-x";
+    x.setAttribute("aria-label", "Dismiss");
+    x.textContent = "×";
+    x.addEventListener("click", () => el.remove());
+    el.appendChild(x);
+    const anchor = form.parentElement || host;
+    anchor.insertAdjacentElement("beforebegin", el);
+  }
+
   // Flash from a no-JS redirect: show once as a toast, then clean the URL.
   (() => {
     const u = new URL(location.href);
@@ -296,8 +316,15 @@
       toast(`#${id}: ${data.message || "done"}`, "ok");
       refreshDrawerIf(id);
     } catch (e) {
-      if (e.data && e.data.card_html) replaceCard(cardById(id), e.data.card_html);
-      toast(`#${id}: ${e.message}`, "err", 7000);
+      // The message first: a failing re-render must never swallow it.
+      const msg = `#${id}: ${e.message || "Action failed; nothing changed."}`;
+      toast(msg, "err", 12000);
+      stickyError(f, msg);
+      try {
+        if (e.data && e.data.card_html) replaceCard(cardById(id), e.data.card_html);
+      } catch {
+        /* card stays as it was */
+      }
     } finally {
       if (btn && btn.isConnected) btn.disabled = false;
     }

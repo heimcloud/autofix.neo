@@ -2193,7 +2193,8 @@ export function handleLab(cfg, job, ctx) {
   }
   if (norm.verdict === "fail") {
     const failure = labFailureText(lab_report, slugs);
-    if (attempt < maxAttempts) {
+    // An admin rerun of the lab test (no_retry) never starts a Hermes attempt.
+    if (attempt < maxAttempts && job.no_retry !== true) {
       const next = enqueueSelf(cfg, "fix", Number(job.incident_id), {
         report_hash: job.report_hash,
         unit: job.unit,

@@ -77,7 +77,7 @@ function needsApproval(id, { attempt = 1, sha = "e", round, branch, prot = PROT 
   });
 }
 /** Worker claims the queued lab job, the runner verifies it, the lab fails. */
-async function runAndFail(id, { retry }) {
+async function runAndFail(id, { retry, bucket = "failed", error = false }) {
   const [file] = labJobs(id);
   assert.ok(file, "an approved lab job is queued");
   const instance = `lab-${file.replace(/\.json$/, "")}`;
@@ -88,7 +88,7 @@ async function runAndFail(id, { retry }) {
   fs.mkdirSync(path.join(tmpDir, "labstate", "approvals"), { recursive: true });
   fs.writeFileSync(path.join(tmpDir, "labstate", "approvals", `${v.eventId}.used`), `${instance}\n`); // single use
   const job = JSON.parse(fs.readFileSync(path.join(tmpDir, "queue", "processing", `${instance}.json`), "utf8"));
-  fs.renameSync(path.join(tmpDir, "queue", "processing", `${instance}.json`), path.join(tmpDir, "queue", "failed", `${instance}.json`));
+  fs.renameSync(path.join(tmpDir, "queue", "processing", `${instance}.json`), path.join(tmpDir, "queue", bucket, `${instance}.json`));
   applyResult({
     kind: "fix",
     via: "lab",
@@ -100,8 +100,9 @@ async function runAndFail(id, { retry }) {
     attempts: job.attempt,
     max_attempts: 2,
     protected: { ...PROT, approved: true, approval_event_id: v.eventId },
-    status: retry ? "lab_retry" : "needs_human",
-    lab: "failed",
+    status: error ? "lab_error" : retry ? "lab_retry" : "needs_human",
+    lab: error ? "error" : "failed",
+    lab_report: { verdict: error ? "error" : "fail", failed_stage: "build", reason: "build failed (exit 1)" },
     summary: retry ? "Lab test failed (1/2 checks passed). Retrying the fix (attempt 2/2)." : "Lab test failed after 2 attempt(s) (1/2 checks passed)",
   });
   return v.eventId;
@@ -226,4 +227,56 @@ test("admin revoke ends the approval; so does Close", async () => {
   db.addIncidentEvent(b.inc.id, "admin_update", "status closed -> open", { from: "closed", to: "open", action: "move" });
   needsApproval(b.inc.id, { sha: "c" });
   assert.equal(db.getIncident(b.inc.id).status, "needs_human");
+});
+
+test("#47-like history: build failures, a new branch, needs_human → Rerun lab test queues a LAB job for the latest head with the approval; never a fix", async () => {
+  const inc = db.upsertIncident({ report_hash: "sticky-47", unit: "docker-autofix.service", severity: "high", logs_excerpt: "stale activation" }).incident;
+  needsApproval(inc.id, { branch: `fix/first-${inc.id}` });
+  await withAdmin(async (port) => assert.equal((await post(port, `/admin/incidents/${inc.id}/approve-lab`)).status, 200));
+  await runAndFail(inc.id, { error: true }); // build error → failed/
+  await withAdmin(async (port) => assert.equal((await post(port, `/admin/incidents/${inc.id}/retry-lab`)).status, 200));
+  await runAndFail(inc.id, { retry: false, bucket: "done" }); // verdict fail → done/
+  // Admin Start fix → new branch, still protected: the approval carries.
+  db.addIncidentEvent(inc.id, "fix_enqueued", "Fix job enqueued for host worker", { job_kind: "fix" });
+  needsApproval(inc.id, { sha: "c", branch: `fix/stale-activation-${inc.id}` });
+  assert.equal(db.getIncident(inc.id).status, "testing");
+  await runAndFail(inc.id, { retry: true, bucket: "done" });
+  needsApproval(inc.id, { attempt: 2, sha: "d", branch: `fix/stale-activation-${inc.id}` });
+  await runAndFail(inc.id, { retry: false, bucket: "done" });
+  assert.equal(db.getIncident(inc.id).status, "needs_human");
+  assert.equal(hi(inc.id).reasons[0].actions[0], "rerun_lab");
+
+  const fixDir = path.join(tmpDir, "queue", "fix");
+  const fixesBefore = fs.readdirSync(fixDir).length;
+  await withAdmin(async (port) => {
+    const r = await post(port, `/admin/incidents/${inc.id}/retry-lab`);
+    assert.equal(r.status, 200, r.body);
+    assert.match(r.json.message, /approval kept/);
+  });
+  assert.equal(fs.readdirSync(fixDir).length, fixesBefore, "no fix job from Rerun");
+  const [file] = labJobs(inc.id);
+  const job = JSON.parse(fs.readFileSync(path.join(labDir, file), "utf8"));
+  assert.equal(job.branch, `fix/stale-activation-${inc.id}`);
+  assert.equal(job.head_sha, "d".repeat(40), "latest pushed head");
+  assert.equal(job.no_retry, true, "a failing rerun never starts Hermes");
+  await runAndFail(inc.id, { retry: false, bucket: "done" }); // runner accepts the fresh approval
+
+  // Job file pruned: rebuilt from the lab_approved event of that run.
+  for (const b of ["done", "failed"]) for (const f of fs.readdirSync(path.join(tmpDir, "queue", b))) if (f.startsWith(`lab-${inc.id}-`)) fs.rmSync(path.join(tmpDir, "queue", b, f));
+  await withAdmin(async (port) => assert.equal((await post(port, `/admin/incidents/${inc.id}/retry-lab`)).status, 200));
+  const [again] = labJobs(inc.id);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(labDir, again), "utf8")).head_sha, "d".repeat(40));
+  fs.rmSync(path.join(labDir, again));
+  db.updateIncident(inc.id, { status: "needs_human" });
+
+  // Nothing to rerun: a clear 409 message, nothing queued.
+  applyResult({ kind: "fix", incident_id: inc.id, status: "needs_human", branch: `fix/stale-activation-${inc.id}`, summary: "Hermes made no commit" });
+  await withAdmin(async (port) => {
+    const r = await post(port, `/admin/incidents/${inc.id}/retry-lab`);
+    assert.equal(r.status, 409);
+    assert.equal(r.json.error, "no_lab_job");
+    assert.match(r.json.message, /No lab run to rerun.*Nothing was queued/);
+  });
+  assert.deepEqual(labJobs(inc.id), []);
+  assert.equal(fs.readdirSync(fixDir).length, fixesBefore);
 });

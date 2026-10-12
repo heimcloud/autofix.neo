@@ -31,6 +31,7 @@ import {
   listEventsForIncidents,
   listFixAttemptsForIncidents,
   createRequestIncident,
+  listIncidentEventsOfKinds,
 } from "./db.js";
 import { renderComposer, validateRequest } from "./composer.js";
 import {
@@ -506,18 +507,22 @@ export function createAdminRouter() {
     if (!incident) return json ? res.status(404).json({ ok: false, error: "not_found" }) : res.status(404).send("Not found");
     try {
       // The lab job comes from the DB (latest lab fix_result) + its failed/ file, never from the form.
-      const src = labRetrySource(incident, getLatestIncidentEvent(id, "fix_result"), getLatestIncidentEvent(id, "job_cancelled"));
-      if (!src) throw Object.assign(new Error(`Incident #${id} has no failed lab test to retry.`), { status: 409, code: "no_lab_job" });
+      const src = labRetrySource(incident, getLatestIncidentEvent(id, "fix_result"), getLatestIncidentEvent(id, "job_cancelled"), {
+        labApprovals: listIncidentEventsOfKinds(id, ["lab_approved"]),
+      });
+      if (!src) {
+        throw Object.assign(new Error(`No lab run to rerun (the latest result is not a lab test, or its job is gone). Nothing was queued; use Start fix for a new attempt.`), { status: 409, code: "no_lab_job" });
+      }
       // Protected: the admin approval of this branch sticks; a fresh signed
       // job for the same head (the old signature is single-use).
       const prot = src.job.protected || src.job.approval ? protectedRetrySource(incident, src.job) : null;
       const reuse = prot ? stickyApproval(incident, prot) : null;
       let msg = "Lab test re-enqueued";
       if (reuse) {
-        approveProtectedLab(incident, prot, { reuse });
+        approveProtectedLab(incident, { ...prot, no_retry: true }, { reuse });
         msg = `Lab test re-enqueued (protected: ${prot.protected.label}; approval kept)`;
       } else {
-        const { path: jobPath } = enqueueLabRetry(incident, src.job);
+        const { path: jobPath } = enqueueLabRetry(incident, src.job, { noRetry: true });
         const file = jobPath.split("/").pop();
         if (incident.status !== "testing") updateIncident(id, { status: "testing" });
         addIncidentEvent(id, "lab_enqueued", `Lab test re-enqueued (retry of ${src.name})`, { job_file: file, job_kind: "lab", retry_of: src.name });
