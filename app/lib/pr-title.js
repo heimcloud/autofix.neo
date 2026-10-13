@@ -31,14 +31,26 @@ function clean(s) {
     .trim();
 }
 
-/** `docker-swag.service` → `swag`; null when nothing usable. */
+const SCOPE_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
+/**
+ * `docker-swag.service` → `swag`, `neo-auto-update.service` → `auto-update`:
+ * strip the container / `neo-` prefix and the unit suffix, keep the rest
+ * whole (dashes included); null when nothing usable.
+ */
 export function unitFromName(unit) {
   let u = String(unit || "").toLowerCase().trim();
   if (!u || u.includes("/") || u.startsWith("[redacted")) return null;
   u = u.replace(STRIP_SUFFIX, "").replace(/@.*$/, "");
   for (let i = 0; i < 3 && STRIP_PREFIX.test(u); i += 1) u = u.replace(STRIP_PREFIX, "");
-  u = u.split(/[-_.]/)[0];
-  return UNIT_RE.test(u) ? u : null;
+  return u.length >= 2 && u.length <= 32 && SCOPE_RE.test(u) ? u : null;
+}
+
+/** Path fallback (unchanged): first dash-separated token of a directory name. */
+function componentFromDir(name) {
+  const u = unitFromName(name);
+  const first = u ? u.split(/[-_.]/)[0] : null;
+  return first && UNIT_RE.test(first) ? first : null;
 }
 
 /** Most frequent component among the changed paths, or null. */
@@ -50,7 +62,7 @@ export function unitFromPaths(paths) {
     const i = parts.indexOf("services");
     if (i >= 0 && parts[i + 1] && i + 2 < parts.length) u = parts[i + 1];
     else if (parts.length > 1) u = parts[0];
-    u = u ? unitFromName(u) : null;
+    u = u ? componentFromDir(u) : null;
     if (u && !["src", "lib", "nix", "app", "docs", "test", "tests"].includes(u)) count.set(u, (count.get(u) || 0) + 1);
   }
   return [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || null;

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildPrTitle, unitFromName, unitFromPaths, sanitizeSummary, PR_TITLE_MAX } from "../lib/pr-title.js";
 
-const FORMAT = /^[a-z][a-z0-9]{1,23}\/(fix|feat): \S.*$/;
+const FORMAT = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*\/(fix|feat): \S.*$/;
 
 test("Hermes' summary from the diff, prefix stripped, unit from the incident", () => {
   const t = buildPrTitle({
@@ -18,8 +18,10 @@ test("Hermes' summary from the diff, prefix stripped, unit from the incident", (
 test("unit: systemd names, then the changed paths, then ops", () => {
   assert.equal(unitFromName("docker-nextcloud.service"), "nextcloud");
   assert.equal(unitFromName("tailscaled.service"), "tailscaled");
-  assert.equal(unitFromName("hermes-agent.service"), "hermes");
-  assert.equal(unitFromName("neo-autofix-labtest@lab-1.service"), "autofix");
+  assert.equal(unitFromName("hermes-agent.service"), "hermes-agent");
+  assert.equal(unitFromName("neo-autofix-labtest@lab-1.service"), "autofix-labtest");
+  assert.equal(unitFromName("neo-web.service"), "web");
+  assert.equal(unitFromName("docker-swag.service"), "swag");
   assert.equal(unitFromName("[redacted-host]"), null);
   assert.equal(unitFromPaths(["nix/services/swag/default.nix", "nix/services/swag/x.nix", "cli/src/a.rs"]), "swag");
   assert.equal(unitFromPaths(["cli/src/commands/activate.rs"]), "cli");
@@ -63,4 +65,14 @@ test("length: at most 72 characters, cut at a clause or word boundary", () => {
   const w = buildPrTitle({ unit: "neo-web.service", candidates: ["clear stale activation jobs and leftover locks and temporary state directories and caches everywhere"] });
   assert.ok(w.length <= PR_TITLE_MAX && !/\s$/.test(w), w);
   assert.match(w, FORMAT);
+});
+
+test("multi-word units stay whole (PR #22 read `auto/fix`)", () => {
+  const c = ["restart the updater after a failed run"];
+  assert.match(buildPrTitle({ unit: "neo-auto-update.service", candidates: c }), /^auto-update\/fix: /);
+  assert.match(buildPrTitle({ unit: "neo-system-updater.service", candidates: c }), /^system-updater\/fix: /);
+  assert.match(buildPrTitle({ unit: "neo-home-assistant.service", candidates: c }), /^home-assistant\/fix: /);
+  assert.equal(buildPrTitle({ unit: "neo-auto-update.service", candidates: c }), "auto-update/fix: restart the updater after a failed run");
+  // Path fallback unchanged.
+  assert.equal(unitFromPaths(["nix/services/home-assistant/default.nix"]), "home");
 });
