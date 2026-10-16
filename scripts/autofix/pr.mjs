@@ -172,7 +172,7 @@ export function labEvidence(report) {
  * redacted lab evidence. The prepared body is NOT re-redacted: if it carries an
  * identifier now, the gate blocks the PR (fail closed).
  */
-export function buildPrText(cfg, { prTitle, prBody, labReport, untested, protectedLabel, labFailed }, slugs = []) {
+export function buildPrText(cfg, { prTitle, prBody, labReport, untested, protectedLabel, labFailed, labNeverRan }, slugs = []) {
   const red = redactKeep(slugs);
   const body = String(prBody || "")
     .split("\n")
@@ -187,6 +187,11 @@ export function buildPrText(cfg, { prTitle, prBody, labReport, untested, protect
       "> Do not merge without fixing or re-testing it.",
       "",
     );
+  } else if (untested && labNeverRan) {
+    lines.push(
+      `> **NOT lab-tested.** The lab test never ran for this branch; the admin opened this PR manually${protectedLabel ? ` (protected change: ${red(protectedLabel)})` : ""}. Review and test before merging.`,
+      "",
+    );
   } else if (untested) {
     lines.push(
       `> **NOT lab-tested.** The admin skipped the automated lab test${protectedLabel ? ` (protected change: ${red(protectedLabel)})` : ""}. Review and test before merging.`,
@@ -194,7 +199,7 @@ export function buildPrText(cfg, { prTitle, prBody, labReport, untested, protect
     );
   }
   lines.push(body, "", "## Lab test", "");
-  if (untested) lines.push("Not run (skipped by the admin).");
+  if (untested) lines.push(labNeverRan ? "Not run (no lab result for this branch)." : "Not run (skipped by the admin).");
   else lines.push(...labEvidence(labReport).map((l) => red(l)));
   lines.push(
     "",

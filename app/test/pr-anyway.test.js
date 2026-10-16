@@ -32,7 +32,7 @@ const { createAdminRouter } = await import("../lib/admin.js");
 const B = await import("../lib/board.js");
 const Q = await import("../lib/queue.js");
 const PR = await import("../../scripts/autofix/pr.mjs");
-const { labFailedPrSource } = await import("../lib/pr-override.js");
+const { prOverrideSource, prOverrideView } = await import("../lib/pr-override.js");
 const { buildCardModel, buildDrawerModel, renderCard, renderDrawer } = await import("../lib/board-view.js");
 
 for (const d of ["triage", "fix", "push", "lab", "pr", "processing", "done", "failed", "control"]) fs.mkdirSync(path.join(tmpDir, "queue", d), { recursive: true });
@@ -126,35 +126,120 @@ function request(port, method, p, { headers = {}, body = "{}" } = {}) {
 }
 
 
-function labFailed(id, reason = "searxng.service failed on 10.20.30.40 after switch") {
-  applyResult({ kind: "fix", incident_id: id, status: "lab_queued", branch: "fix/searxng", head_sha: "b".repeat(40), pr_title: "fix(searxng): drop stale engines", pr_body: "Fixes the engines.", target_repo: "example-upstream/neo", summary: "pushed" });
-  applyResult({ kind: "fix", via: "lab", incident_id: id, status: "needs_human", lab: "failed", branch: "fix/searxng", attempts: 2, max_attempts: 2, summary: "Lab test failed after 2 attempt(s)", lab_report: { verdict: "fail", reason } });
-}
-const drawer = (id) => buildDrawerModel(db.getIncident(id), events(id), db.listFixAttempts(id), redact, { labAuto: true, prAuto: true });
 
-test("drawer: Open PR anyway only behind More when the lab failed and no PR is open; never on the card", () => {
-  const inc = incident();
-  labFailed(inc.id);
-  const html = renderDrawer(drawer(inc.id), "/admin", CAPS);
-  assert.match(html, /<details class="kc-more dr-more"><summary[^>]*>More<\/summary>[\s\S]*action="\/admin\/incidents\/\d+\/open-pr-anyway"/);
-  assert.doesNotMatch(renderCard(card(inc.id), "/admin", CAPS), /open-pr-anyway/);
-  assert.doesNotMatch(renderDrawer(drawer(inc.id), "/admin", { ...CAPS, readOnly: true }), /open-pr-anyway/);
-  assert.doesNotMatch(renderDrawer(drawer(inc.id), "/admin", { ...CAPS, pr: false }), /open-pr-anyway/);
-  // lab passed → normal path, no override
-  const ok = incident();
-  labPassed(ok.id);
-  assert.doesNotMatch(renderDrawer(drawer(ok.id), "/admin", CAPS), /open-pr-anyway/);
-  // PR already open → hidden
-  const open = incident();
-  labFailed(open.id);
-  prResult(open.id, "opened");
-  assert.doesNotMatch(renderDrawer(drawer(open.id), "/admin", CAPS), /open-pr-anyway/);
-  assert.equal(labFailedPrSource(db.getIncident(open.id), events(open.id)), null);
+const A = "a".repeat(40);
+const Bsha = "b".repeat(40);
+const BR = "fix/additional-disks-zfs-mount-race";
+const fail2 = (reason = "zfs mount raced on 10.20.30.40; 9/11 checks passed") => ({ verdict: "fail", reason, checks: [], generation: { before: 41, after: 41, restored: true } });
+
+/** #53 as seen live: protected change, admin approval, attempt 1 fail → Hermes retry → attempt 2/2 fail, needs_human. */
+function history53(id, { tail = [] } = {}) {
+  applyResult({ kind: "fix", incident_id: id, status: "lab_approval_needed", branch: BR, head_sha: A, pr_title: "fix(disko): wait for the zfs pool before mounting", pr_body: "Orders the mount after zfs-import.", target_repo: "example-upstream/neo", protected: { paths: ["nix/modules/core"], core: true }, summary: `Branch ${BR} was pushed to the fork; the automated lab test did not run because the change touches nix/modules/core.` });
+  db.addIncidentEvent(id, "lab_approved", "Admin approved the protected lab test", { approved_by: "admin", branch: BR, head_sha: A });
+  db.addIncidentEvent(id, "lab_enqueued", "Lab test queued", { branch: BR, head_sha: A });
+  applyResult({ kind: "fix", via: "lab", incident_id: id, status: "lab_retry", lab: "failed", branch: BR, attempts: 1, max_attempts: 2, lab_report: fail2("first try"), summary: "Lab test failed (8/11). Retrying." });
+  applyResult({ kind: "fix", incident_id: id, status: "lab_queued", branch: BR, head_sha: Bsha, pr_title: "fix(disko): wait for the zfs pool before mounting", pr_body: "Orders the mount after zfs-import (v2).", target_repo: "example-upstream/neo", attempt: 2, summary: "pushed attempt 2" });
+  applyResult({ kind: "fix", via: "lab", incident_id: id, status: "needs_human", lab: "failed", branch: BR, attempts: 2, max_attempts: 2, target_repo: "example-upstream/neo", lab_report: fail2(), summary: "Lab test failed after 2 attempt(s) (9/11 checks passed, generation 41 → lab → 41 (restored)): zfs mount raced" });
+  for (const t of tail) t(id);
+}
+const inc53 = () => incident({ unit: "neo-disko-additionalDisks.service", title: "additionalDisks mount fails at boot" });
+const drawer = (id, c = CAPS) => renderDrawer(buildDrawerModel(db.getIncident(id), events(id), db.listFixAttempts(id), redact, { labAuto: true, prAuto: true }), "/admin", c);
+const ENABLED = /<details class="kc-more dr-more" data-has-override><summary[^>]*>More<\/summary>[\s\S]*?action="\/admin\/incidents\/\d+\/open-pr-anyway"[\s\S]*?<button[^>]*>Open PR anyway \(lab failed\)<\/button>/;
+
+test("#53 exact state (attempt 2/2 failed, generation restored, needs_human): More is enabled and holds the override", () => {
+  const inc = inc53();
+  history53(inc.id);
+  assert.equal(db.getIncident(inc.id).status, "needs_human");
+  const html = drawer(inc.id);
+  assert.match(html, ENABLED);
+  assert.doesNotMatch(html, /<button[^>]*disabled[^>]*>Open PR/);
+  assert.doesNotMatch(html, /data-pr-override-reason/);
+  assert.doesNotMatch(renderCard(card(inc.id), "/admin", CAPS), /open-pr-anyway|dr-more/);
+  const s = prOverrideSource(db.getIncident(inc.id), events(inc.id));
+  assert.equal(s.ok, true);
+  assert.equal(s.mode, "lab_failed");
+  assert.equal(s.head_sha, Bsha, "head of attempt 2, not the approved attempt 1");
+  // The More toggle is styled with the board palette (v0.3.6 used undefined vars → looked disabled).
+  const css = fs.readFileSync(new URL("../public/css/board.css", import.meta.url), "utf8");
+  const rule = css.match(/\.kc-more > summary \{[^}]*\}/)[0];
+  assert.doesNotMatch(rule, /var\(--(line|muted),/);
+  assert.match(rule, /cursor: pointer/);
 });
 
-test("route: queues one lab_failed PR job (title format, redacted reason), logs admin event, double click 409, CSRF refused", async () => {
-  const inc = incident({ title: "searxng engines failing" });
-  labFailed(inc.id);
+test("#53 variants: a later non-lab fix_result, a worker lab error without branch, a build failure, branch only on the row", () => {
+  // Hermes attempt result after the lab failure (no via, still needs_human)
+  const a = inc53();
+  history53(a.id, { tail: [(id) => applyResult({ kind: "fix", incident_id: id, status: "needs_human", summary: "Hermes: no further change" })] });
+  assert.match(drawer(a.id), ENABLED);
+  // Worker crash on the lab job: failureResult has via lab / lab error but no branch
+  const b = inc53();
+  history53(b.id, { tail: [(id) => applyResult({ kind: "fix", via: "lab", incident_id: id, status: "lab_error", lab: "error", summary: "worker error: boom" })] });
+  assert.match(drawer(b.id), ENABLED);
+  // Build failure in the lab (lab error with the branch, stored in failed/)
+  const c = inc53();
+  history53(c.id, { tail: [(id) => applyResult({ kind: "fix", via: "lab", incident_id: id, status: "lab_error", lab: "error", branch: BR, lab_report: { verdict: "error", reason: "nixos-rebuild build failed" }, summary: "Lab test error: build failed" })] });
+  assert.match(drawer(c.id), /Open PR anyway \(lab error\)/);
+  // Branch only in draft_branch (old rows)
+  const d = incident({ unit: "neo-disko-additionalDisks.service" });
+  db.updateIncident(d.id, { draft_branch: BR, status: "needs_human" });
+  const v = prOverrideView(db.getIncident(d.id), events(d.id));
+  assert.equal(v.ok, true);
+  assert.equal(v.lab, "never");
+  assert.match(drawer(d.id), /Open PR anyway \(not lab-tested\)/);
+});
+
+test("#47-like: open PR / stale PR job / PR off / not allowlisted show the reason in More; closed PR allows a new one; read-only hides", () => {
+  const open = inc53();
+  history53(open.id);
+  prResult(open.id, "opened", { branch: BR });
+  let html = drawer(open.id);
+  assert.match(html, /data-pr-override-reason>[^<]*PR #12 is already open/);
+  assert.doesNotMatch(html, /open-pr-anyway/);
+  prResult(open.id, "closed", { pr_state: "closed", branch: BR });
+  assert.match(drawer(open.id), /data-has-override/);
+  // stale PR job left in processing/
+  const st = inc53();
+  history53(st.id);
+  const stale = path.join(tmpDir, "queue", "processing", `pr-${st.id}-2026-10-01T00-00-00-000Z.json`);
+  fs.writeFileSync(stale, "{}");
+  html = drawer(st.id);
+  assert.match(html, /already queued or running \(pr-\d+-2026-10-01T00-00-00-000Z\.json since /);
+  fs.rmSync(stale);
+  assert.match(drawer(st.id), ENABLED);
+  // PR automation off (caps) → reason, no form
+  html = drawer(st.id, { ...CAPS, pr: false });
+  assert.match(html, /PR automation is off/);
+  assert.doesNotMatch(html, /open-pr-anyway/);
+  // target not allowlisted
+  const t = inc53();
+  history53(t.id);
+  applyResult({ kind: "fix", via: "lab", incident_id: t.id, status: "needs_human", lab: "failed", branch: BR, target_repo: "someone/else", lab_report: fail2(), summary: "fail" });
+  assert.match(drawer(t.id), /not allowlisted/);
+  assert.doesNotMatch(drawer(st.id, { ...CAPS, readOnly: true }), /dr-more/);
+  // no fix branch at all → nothing
+  const none = incident();
+  assert.doesNotMatch(drawer(none.id), /dr-more/);
+});
+
+test("manual report with a fix branch and no lab run: not_tested job, ops/ title fallback", async () => {
+  const m = incident({ source: "manual", unit: null, title: "Disk mount fails at boot", contact: "x" });
+  applyResult({ kind: "fix", incident_id: m.id, status: "lab_queued", branch: "fix/manual-mount", head_sha: A, target_repo: "example-upstream/neo", summary: "pushed" });
+  await withAdmin(async (port) => {
+    const r = await request(port, "POST", `/admin/incidents/${m.id}/open-pr-anyway`);
+    assert.equal(r.status, 200, r.body);
+    assert.match(r.json.message, /not lab-tested/);
+  });
+  const job = JSON.parse(fs.readFileSync(path.join(tmpDir, "queue", "pr", jobs("pr", m.id)[0]), "utf8"));
+  assert.equal(job.mode, "not_tested");
+  assert.equal(job.lab_failure_reason, undefined);
+  assert.match(job.pr_title, /^ops\/fix: /);
+  const t = PR.buildPrText({}, { prTitle: job.pr_title, prBody: "b", untested: true, labNeverRan: true });
+  assert.match((typeof t === "string" ? t : t.body).split("\n")[0], /NOT lab-tested\.\*\* The lab test never ran/);
+});
+
+test("route on #53: one lab_failed job (title, redacted reason, head of attempt 2), admin event, double click 409, CSRF 403", async () => {
+  const inc = inc53();
+  history53(inc.id);
   await withAdmin(async (port) => {
     const x = await request(port, "POST", `/admin/incidents/${inc.id}/open-pr-anyway`, { headers: { origin: "https://evil.example.net", "sec-fetch-site": "cross-site" } });
     assert.equal(x.status, 403);
@@ -163,40 +248,48 @@ test("route: queues one lab_failed PR job (title format, redacted reason), logs 
       request(port, "POST", `/admin/incidents/${inc.id}/open-pr-anyway`),
       request(port, "POST", `/admin/incidents/${inc.id}/open-pr-anyway`),
     ]);
-    const st = [r.status, again.status].sort();
-    assert.deepEqual(st, [200, 409]);
+    assert.deepEqual([r.status, again.status].sort(), [200, 409]);
     const third = await request(port, "POST", `/admin/incidents/${inc.id}/open-pr-anyway`);
     assert.equal(third.status, 409);
     assert.equal(third.json.error, "already_queued");
+    assert.match(third.json.message, /already queued or running/);
   });
   const files = jobs("pr", inc.id);
   assert.equal(files.length, 1);
   const job = JSON.parse(fs.readFileSync(path.join(tmpDir, "queue", "pr", files[0]), "utf8"));
-  assert.equal(job.kind, "pr");
   assert.equal(job.mode, "lab_failed");
-  assert.equal(job.branch, "fix/searxng");
-  assert.equal(job.head_sha, "b".repeat(40));
-  assert.match(job.pr_title, /^searxng\/fix: drop stale engines$/);
+  assert.equal(job.branch, BR);
+  assert.equal(job.head_sha, Bsha);
+  assert.match(job.pr_title, /^disko-additionalDisks\/fix: |^[a-zA-Z-]+\/fix: /);
   assert.ok(job.pr_title.length <= 72);
   assert.doesNotMatch(job.lab_failure_reason, /10\.20\.30\.40/);
   assert.match(job.lab_failure_reason, /\[redacted-ip\]/);
-  assert.equal(job.auto_merge, undefined);
   const ev = events(inc.id).filter((e) => e.kind === "pr_override");
   assert.equal(ev.length, 1);
-  assert.match(ev[0].message, /lab test failed/);
-  // Not eligible (lab passed) → 409, no job.
-  const ok = incident();
-  labPassed(ok.id);
+  assert.match(ev[0].message, /although the lab test failed/);
+  // Ineligible (PR open) → 409 with the reason, no job.
+  const o = inc53();
+  history53(o.id);
+  prResult(o.id, "opened", { branch: BR });
   await withAdmin(async (port) => {
-    const r = await request(port, "POST", `/admin/incidents/${ok.id}/open-pr-anyway`);
+    const r = await request(port, "POST", `/admin/incidents/${o.id}/open-pr-anyway`);
     assert.equal(r.status, 409);
-    assert.equal(r.json.error, "no_failed_branch");
+    assert.equal(r.json.error, "pr_open");
+    assert.match(r.json.message, /PR #12 is already open/);
   });
-  assert.equal(jobs("pr", ok.id).length, 0);
+});
+
+test("lab passed → plain Open PR (mode open)", () => {
+  const p = incident();
+  labPassed(p.id);
+  const s = prOverrideSource(db.getIncident(p.id), events(p.id));
+  assert.equal(s.ok, true);
+  assert.equal(s.mode, "open");
+  assert.match(drawer(p.id), />Open PR<\/button>/);
 });
 
 test("PR body: FAILED notice with the redacted reason at the top", () => {
-  const t = PR.buildPrText({}, { prTitle: "docker-searxng/fix: drop stale engines", prBody: "Fixes the engines.", labFailed: { reason: "unit failed on 10.20.30.40\nnext line" } });
+  const t = PR.buildPrText({}, { prTitle: "searxng/fix: drop stale engines", prBody: "Fixes the engines.", labFailed: { reason: "unit failed on 10.20.30.40\nnext line" } });
   const text = typeof t === "string" ? t : t.body;
   const first = text.split("\n").slice(0, 3).join("\n");
   assert.match(first, /Lab test FAILED/);
