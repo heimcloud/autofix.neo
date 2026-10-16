@@ -27,6 +27,7 @@ import { resolveTargetRepo } from "./github.js";
 import { liveIndicator, renderRunLine } from "./worker-view.js";
 import { isAutofixKindEnabled } from "./queue.js";
 import { normalizeLabReport } from "./lab-checks.js";
+import { labFailedPrSource } from "./pr-override.js";
 
 const esc = (s) => escapeHtml(s == null ? "" : s);
 
@@ -250,6 +251,8 @@ export function buildDrawerModel(incident, events, attempts, redact, opts = {}) 
     neoVersion: redact(incident.neo_version || ""),
     branch: redact(incident.draft_branch || ""),
     prTitle: redact(incident.prepared_pr_title || ""),
+    // "Open PR anyway" (drawer only, behind More): failed-lab branch, no PR open.
+    prOverride: Boolean(labFailedPrSource(incident, events)),
     draftPrUrl: safeLink(incident.draft_pr_url, redact),
     compareUrlRaw: incident.compare_url ? (card.compareUrl ? card.compareUrl : redact(incident.compare_url)) : "",
     lab: fm.lab ? redact(String(fm.lab)) : "",
@@ -670,6 +673,20 @@ export function renderBoard({ cards, counts, filters, base, caps, status, flash 
   </div>`;
 }
 
+/**
+ * Drawer-only override behind a "More" toggle: open the upstream PR (draft)
+ * although the lab test failed. Never rendered on the card / board.
+ */
+function prOverrideForm(base, d, caps) {
+  if (!d.prOverride || caps.readOnly || !caps.pr) return "";
+  const confirm = `Open the upstream PR for incident #${d.id} although the lab test FAILED? It opens as a draft with a "Lab test FAILED" notice and the failure reason at the top; it is never merged automatically.`;
+  return `<details class="kc-more dr-more"><summary title="More actions" aria-label="More actions for #${d.id}">More</summary><div class="kc-more-body">
+      <form class="act-form" method="post" action="${esc(`${base}/incidents/${d.id}/open-pr-anyway`)}" data-confirm="${esc(confirm)}">
+        <input type="hidden" name="return_to" value="board" />
+        <button class="kbtn kbtn-lg danger" type="submit">Open PR anyway (lab failed)</button>
+      </form></div></details>`;
+}
+
 // ----------------------------------------------------------------- drawer
 
 export function renderDrawer(d, base, caps) {
@@ -723,6 +740,7 @@ export function renderDrawer(d, base, caps) {
     <div class="dr-body">
       ${reasons}
       ${actions || mv ? `<div class="dr-actions">${actions}${mv}</div>` : ""}
+      ${prOverrideForm(base, d, caps)}
       <section><h3>Summary</h3><p>${esc(d.summaryFull)}</p></section>
       <dl class="dr-kv">
         ${kv("Unit", esc(d.unit || "—"))}

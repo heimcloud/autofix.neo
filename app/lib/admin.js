@@ -49,6 +49,7 @@ import {
 import { ingestResultsDir, pushRetryJob } from "./results.js";
 import { labApprovalSource, approveProtectedLab, skipProtectedLab, stickyApproval, protectedRetrySource, revokeLabApproval } from "./lab-approval.js";
 import { startPrLoopValidation } from "./validation.js";
+import { labFailedPrSource, enqueueLabFailedPrJob } from "./pr-override.js";
 import { registerQueueRoutes } from "./admin-queue.js";
 import { workerModel, queueModel } from "./worker-state.js";
 import { renderWorkerPanel } from "./worker-view.js";
@@ -593,6 +594,42 @@ export function createAdminRouter() {
   router.post("/incidents/:id/skip-lab", protectedLabHandler("skip"));
   router.post("/incidents/:id/start-triage", enqueueHandler("triage"));
   // "Open the PR now": lab-passed branch that only got a compare link.
+  // "Open PR anyway": the lab test failed, the admin opens the PR regardless
+  // (draft, FAILED notice + redacted reason on top, normal PR path).
+  router.post("/incidents/:id/open-pr-anyway", (req, res) => {
+    const base = req.adminBase;
+    const json = wantsJson(req);
+    if (ADMIN_READ_ONLY && json) return res.status(403).json({ ok: false, error: "read_only", message: "Admin is read-only (ADMIN_READ_ONLY)." });
+    if (refuseMutations(res, base)) return;
+    const id = Number(req.params.id);
+    const incident = getIncident(id);
+    if (!incident) return json ? res.status(404).json({ ok: false, error: "not_found" }) : res.status(404).send("Not found");
+    try {
+      const events = listEventsForIncidents([id]).get(id) || [];
+      const src = labFailedPrSource(incident, events);
+      const slugs = mergeKnownSlugs(listDistinctCustomerRepoSlugs(), ...getExtraRedactSlugs());
+      const { path: jobPath, job } = enqueueLabFailedPrJob(incident, src, { slugs });
+      const file = jobPath.split("/").pop();
+      addIncidentEvent(id, "pr_override", `Admin override: PR job queued although the lab test failed (draft "${job.pr_title}", branch ${job.branch}); never auto-merged`, {
+        by: "admin",
+        job_file: file,
+        job_kind: "pr",
+        mode: "lab_failed",
+        branch: job.branch,
+        head_sha: job.head_sha,
+        pr_title: job.pr_title,
+        lab_failure_reason: job.lab_failure_reason,
+        fix_event_id: src.fix_event_id,
+      });
+      const msg = "PR job queued (lab failed; opens as a draft)";
+      if (json) return res.json({ ok: true, message: msg, ...cardPayload(id, base) });
+      return res.redirect(303, backTo(req, base, id, "msg", msg));
+    } catch (err) {
+      const message = err.message || "Open PR anyway failed";
+      if (json) return res.status(err.status || 409).json({ ok: false, error: err.code || "open_pr_failed", message, ...cardPayload(id, base) });
+      return res.redirect(303, backTo(req, base, id, "err", message));
+    }
+  });
   router.post("/incidents/:id/open-pr", (req, res) => {
     const base = req.adminBase;
     const json = wantsJson(req);

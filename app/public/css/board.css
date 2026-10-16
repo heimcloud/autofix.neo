@@ -530,3 +530,4 @@ body.pub main { max-width: 960px; margin: 0 auto; padding: 1.5rem 1rem 2.5rem; }
 .cmp-meta { font-size: 0.75rem; color: var(--k-faint); }
 .act-error { display: flex; gap: 0.5rem; align-items: flex-start; justify-content: space-between; margin: 0.4rem 0; padding: 0.45rem 0.6rem; border-radius: 8px; background: var(--k-crit); color: #fff; font-size: 0.83rem; }
 .act-error-x { background: none; border: 0; color: inherit; font-size: 1rem; line-height: 1; cursor: pointer; padding: 0 0.2rem; }
+.dr-more { margin: 0 0 0.75rem; }

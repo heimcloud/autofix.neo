@@ -1702,7 +1702,7 @@ function prReady(cfg) {
  * the job result (fix_result) with the PR outcome folded in; the PR state goes
  * to the app as a separate kind "pr" result. Redaction hit → no PR, no reply.
  */
-export function afterLabPass(cfg, job, res, { slugs = [], untested = false, protectedLabel = "" } = {}) {
+export function afterLabPass(cfg, job, res, { slugs = [], untested = false, protectedLabel = "", labFailed = null } = {}) {
   const ready = prReady(cfg);
   if (!ready.ok || !cfg.target) return ready.ok ? res : { ...res, pr_skipped: ready.reason, summary: ready.disabled ? `${res.summary} ${ready.reason}.` : res.summary };
   const id = Number(job.incident_id);
@@ -1739,14 +1739,14 @@ export function afterLabPass(cfg, job, res, { slugs = [], untested = false, prot
       : resolveReviewers(cfg, cfg.target);
     for (const n of rv.notes) log(`incident ${id}: ${n}`);
     cfg = { ...cfg, trustedReviewers: rv.reviewers };
-    const text = buildPrText(cfg, { prTitle: job.pr_title, prBody: job.pr_body, labReport: res.lab_report, untested, protectedLabel }, slugs);
+    const text = buildPrText(cfg, { prTitle: job.pr_title, prBody: job.pr_body, labReport: res.lab_report, untested, protectedLabel, labFailed }, slugs);
     const hits = [...outboundHits(text.title, slugs), ...outboundHits(text.body, slugs)];
     if (!text.title.trim()) hits.push("empty_title");
     if (hits.length) {
       writePrResult(cfg, { kind: "pr", via: "pr", pr_event: "blocked", incident_id: id, target_repo: cfg.target.upstream, branch: job.branch, summary: `PR not opened: the redaction gate blocked the title/body (${hits.join(", ")}).` });
       return { ...res, status: "redaction_blocked", compare_url: undefined, pr_blocked: true, summary: `Lab ${untested ? "skipped" : "passed"}, but the PR was NOT opened: the redaction gate blocked its title/body (${hits.join(", ")}).` };
     }
-    const draft = untested || cfg.prDraft;
+    const draft = untested || Boolean(labFailed) || cfg.prDraft;
     const pr = openOrAdoptPr(cfg, { branch: job.branch, title: text.title, body: text.body, draft });
     if (!pr.ok) {
       // Never "PR open" without a PR number and a state record: needs_human
@@ -1781,6 +1781,8 @@ export function afterLabPass(cfg, job, res, { slugs = [], untested = false, prot
  */
 export function handlePr(cfg, job, ctx) {
   const untested = job.mode === "untested";
+  // Admin "Open PR anyway" after a failed lab test: draft, FAILED notice on top.
+  const labFailed = job.mode === "lab_failed" ? { reason: String(job.lab_failure_reason || "") } : null;
   const base = {
     kind: "pr",
     via: "pr",
@@ -1794,11 +1796,11 @@ export function handlePr(cfg, job, ctx) {
   if (!ready.ok) return { ...base, pr_event: "error", summary: `${ready.reason}; use the compare link.` };
   const res = {
     ...base,
-    summary: untested ? "Lab test skipped by the admin." : "Lab test passed.",
+    summary: labFailed ? "Lab test failed; PR opened anyway by the admin." : untested ? "Lab test skipped by the admin." : "Lab test passed.",
     lab_report: job.lab_report && typeof job.lab_report === "object" ? job.lab_report : undefined,
   };
   const label = job.protected ? (normalizeProtected(job.protected)?.label || "") : "";
-  const out = afterLabPass(cfg, job, res, { slugs: ctx.slugs, untested, protectedLabel: label });
+  const out = afterLabPass(cfg, job, res, { slugs: ctx.slugs, untested, protectedLabel: label, labFailed });
   // The PR outcome itself went out as a side result; this one only logs.
   return { ...out, kind: "pr", via: "pr", pr_event: out.status === "redaction_blocked" ? "blocked_job" : "job", status: undefined, _noIngest: true };
 }

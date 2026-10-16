@@ -172,7 +172,7 @@ export function labEvidence(report) {
  * redacted lab evidence. The prepared body is NOT re-redacted: if it carries an
  * identifier now, the gate blocks the PR (fail closed).
  */
-export function buildPrText(cfg, { prTitle, prBody, labReport, untested, protectedLabel }, slugs = []) {
+export function buildPrText(cfg, { prTitle, prBody, labReport, untested, protectedLabel, labFailed }, slugs = []) {
   const red = redactKeep(slugs);
   const body = String(prBody || "")
     .split("\n")
@@ -180,7 +180,14 @@ export function buildPrText(cfg, { prTitle, prBody, labReport, untested, protect
     .join("\n")
     .trimEnd();
   const lines = [];
-  if (untested) {
+  if (labFailed) {
+    const why = red(String(labFailed.reason || "no reason recorded")).replace(/\s+/g, " ").trim().slice(0, 400);
+    lines.push(
+      `> **⚠️ Lab test FAILED.** The admin opened this PR anyway (manual override). Failure: ${why}`,
+      "> Do not merge without fixing or re-testing it.",
+      "",
+    );
+  } else if (untested) {
     lines.push(
       `> **NOT lab-tested.** The admin skipped the automated lab test${protectedLabel ? ` (protected change: ${red(protectedLabel)})` : ""}. Review and test before merging.`,
       "",
