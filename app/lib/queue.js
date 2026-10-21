@@ -2,6 +2,7 @@
  * Host-shared job queue under OPS_DATA_DIR (default dirname(OPS_DB_PATH)).
  * Jobs never include customer_repo_slug or unredacted logs.
  */
+import { sanitizeGateHits } from "./gate-hits.js";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -202,6 +203,8 @@ export function buildJobPayload(kind, incident, extra = {}) {
     // Allowlisted target (fix jobs): the worker clones / pushes / tests it.
     ...(kind === "fix" ? { target_repo: resolveTargetRepo(incident) } : {}),
     ...(extra.validation ? { validation: true } : {}),
+    // Admin "Retry with gate hint": masked locations only (see gate-hits.js).
+    ...(kind === "fix" && extra.gate_retry ? { gate_retry: { label: String(extra.gate_retry.label || "diff").replace(/[^a-z_]/g, "").slice(0, 20), hits: sanitizeGateHits(extra.gate_retry.hits) } } : {}),
     enqueued_at: new Date().toISOString(),
   };
 }

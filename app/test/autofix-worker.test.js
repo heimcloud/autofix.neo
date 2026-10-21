@@ -62,6 +62,8 @@ git switch -q -c fix/searxng-engines 2>/dev/null || git switch -q fix/searxng-en
 case "$mode" in
   ok) echo "limiter = true  # $(date +%s%N)" >> nix/services/searxng/default.nix ;;
   leak) echo "owner = ZZTEST0000" >> nix/services/searxng/default.nix ;;
+  ipleak) printf '  # upstream peer\n  peer = "10.20.30.40";\n' >> nix/services/searxng/default.nix ;;
+  loopback) printf '  bind = "127.0.0.1:8080"; any = "0.0.0.0/0"; doc = "192.0.2.7";\n' >> nix/services/searxng/default.nix ;;
   deny) mkdir -p nix/services/ops && echo x > nix/services/ops/x.nix ;;
   nocommit) echo '{"status":"ready_to_push","branch":"fix/searxng-engines","summary":"nothing"}'; exit 0 ;;
 esac
@@ -206,6 +208,28 @@ test("fix job with an identifier in the diff is blocked before push (fail closed
   assert.match(r.summary, /redaction_fail_closed:diff/);
   const afterSha = execFileSync("git", ["-C", fork, "rev-parse", "fix/searxng-engines"], { encoding: "utf8" }).trim();
   assert.equal(afterSha, before, "nothing pushed");
+});
+
+test("v0.3.8: private IPv4 in the diff → blocked with file:line + masked class, never the raw value", () => {
+  process.env.FAKE_HERMES_MODE = "ipleak";
+  const before = execFileSync("git", ["-C", fork, "rev-parse", "fix/searxng-engines"], { encoding: "utf8" }).trim();
+  const name = enqueue("fix", 16);
+  W.main([]);
+  const r = result("fix", name);
+  assert.equal(r.status, "redaction_blocked");
+  assert.match(r.summary, /^redaction_fail_closed:diff:ipv4 at nix\/services\/searxng\/default\.nix:\d+ \(added, private 10\.x\.x\.x\)/);
+  assert.doesNotMatch(JSON.stringify(r), /10\.20\.30\.40/);
+  assert.equal(r.gate_hits[0].side, "added");
+  assert.equal(r.gate_hits[0].masked, "10.x.x.x");
+  assert.equal(execFileSync("git", ["-C", fork, "rev-parse", "fix/searxng-engines"], { encoding: "utf8" }).trim(), before, "nothing pushed");
+});
+
+test("v0.3.8: loopback, 0.0.0.0/0 and RFC 5737 doc addresses pass the gate", () => {
+  process.env.FAKE_HERMES_MODE = "loopback";
+  const name = enqueue("fix", 17);
+  W.main([]);
+  const r = result("fix", name);
+  assert.notEqual(r.status, "redaction_blocked", r.summary);
 });
 
 test("protected path while lab shares ops host, lab stage off → pushed, awaiting a manual lab test (no denial)", () => {

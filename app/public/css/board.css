@@ -534,3 +534,4 @@ body.pub main { max-width: 960px; margin: 0 auto; padding: 1.5rem 1rem 2.5rem; }
 .dr-more { margin: 0 0 0.75rem; }
 .dr-more > summary { font-size: 0.8rem; padding: 0.25rem 0.6rem; }
 .dr-more-why { margin: 0.25rem 0 0; }
+.kc-gate { margin: 0.2rem 0 0; font-size: 0.72rem; color: var(--k-muted); font-family: ui-monospace, monospace; overflow-wrap: anywhere; }

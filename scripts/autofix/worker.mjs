@@ -25,6 +25,7 @@ import {
   findIdentifierHits,
   getExtraRedactSlugs,
   mergeKnownSlugs,
+  ipv4GateMatches,
 } from "../../app/lib/redact.js";
 import { buildCompareUrl } from "../../app/lib/compare.js";
 import {
@@ -866,10 +867,73 @@ export function knownSlugs(cfg) {
 export function scanOutbound(label, text, slugs) {
   const hits = findIdentifierHits(text, { knownSlugs: slugs });
   if (hits.length) {
-    const err = new Error(`redaction_fail_closed:${label}:${hits.join(",")}`);
+    const where = hits.includes("ipv4") ? locateIpv4(label, text, slugs) : [];
+    const err = new Error(`redaction_fail_closed:${label}:${hits.join(",")}${where.length ? ` at ${describeGateHits(where)}` : ""}`);
     err.hits = hits;
+    if (where.length) err.gate_hits = where;
     throw err;
   }
+}
+
+/**
+ * Where the IPv4 gate tripped, never the value: [{ scope, file, line, side,
+ * cls, masked }]. For a unified diff: the new-side line of an added or
+ * context line, the old-side line of a removed one; other texts: line N of
+ * the label (commit_message, pr_body, …). At most 10.
+ */
+export function locateIpv4(label, text, slugs = []) {
+  const out = [];
+  // A path is shown when it passes the gate itself (no slug / IP / email / lab
+  // host); generic redaction would mangle names like default.nix.
+  const safePath = (f) => (findIdentifierHits(f, { knownSlugs: slugs }).length || !/^[A-Za-z0-9_./@+ -]{1,160}$/.test(f) ? "[path withheld]" : f);
+  const lines = String(text || "").split("\n");
+  if (label !== "diff") {
+    lines.forEach((l, i) => {
+      for (const m of ipv4GateMatches(l)) if (out.length < 10) out.push({ scope: label, file: null, line: i + 1, side: null, cls: m.cls, masked: m.masked });
+    });
+    return out;
+  }
+  let file = null;
+  let oldNo = 0;
+  let newNo = 0;
+  for (const l of lines) {
+    if (out.length >= 10) break;
+    if (l.startsWith("diff --git ")) {
+      file = null;
+      continue;
+    }
+    if (l.startsWith("+++ ")) {
+      file = l.slice(4).replace(/^b\//, "");
+      continue;
+    }
+    if (l.startsWith("--- ") || l.startsWith("index ")) continue;
+    const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+    if (h) {
+      oldNo = Number(h[1]);
+      newNo = Number(h[2]);
+      // The hunk header's function context is a context line too.
+      for (const m of ipv4GateMatches(l.replace(/^@@[^@]*@@/, ""))) out.push({ scope: "diff", file: file && safePath(file), line: newNo, side: "context", cls: m.cls, masked: m.masked });
+      continue;
+    }
+    const side = l[0] === "+" ? "added" : l[0] === "-" ? "removed" : l[0] === " " ? "context" : null;
+    const at = side === "removed" ? oldNo : newNo;
+    if (side === "added") newNo += 1;
+    else if (side === "removed") oldNo += 1;
+    else if (side === "context") {
+      oldNo += 1;
+      newNo += 1;
+    }
+    for (const m of ipv4GateMatches(side ? l.slice(1) : l)) {
+      if (out.length < 10) out.push({ scope: "diff", file: file && safePath(file), line: at, side: side || "header", cls: m.cls, masked: m.masked });
+    }
+  }
+  return out;
+}
+
+/** "nix/a.nix:42 (added, private 10.x.x.x); … +2 more" (masked, no raw value). */
+export function describeGateHits(hits, max = 3) {
+  const one = (h) => `${h.file ? `${h.file}:${h.line}` : `${h.scope} line ${h.line}`} (${h.side ? `${h.side}, ` : ""}${h.cls} ${h.masked})`;
+  return hits.slice(0, max).map(one).join("; ") + (hits.length > max ? `; +${hits.length - max} more` : "");
 }
 
 /** First protected prefix the diff touches (null when the lab does not share the ops host). */
@@ -1128,7 +1192,34 @@ export function requestSection(job) {
   ];
 }
 
-function fixPrompt(job, neoDir, cfg, attempt, previousFailure, continueBranch = "") {
+/** Redaction-gate rule every fix prompt carries (see skills/autofix-fix). */
+export const GATE_HINT =
+  "Redaction gate: never hardcode an IP address (commit, diff incl. context lines, file names, PR text). Read addresses from config/options; for examples or tests use 192.0.2.x. Only 0.0.0.0, 127.x.x.x and 192.0.2.x / 198.51.100.x / 203.0.113.x pass.";
+
+/** Admin "Retry with gate hint": the masked locations of the blocked attempt. */
+export function gateRetrySection(job) {
+  const g = job.gate_retry;
+  if (!g || typeof g !== "object") return [];
+  const hits = (Array.isArray(g.hits) ? g.hits : []).slice(0, 10).filter((h) => h && typeof h === "object");
+  const SAFE = /^[A-Za-z0-9_./ -]{0,160}$/;
+  const lines = hits.map((h) => {
+    const file = typeof h.file === "string" && SAFE.test(h.file) && !/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(h.file) ? h.file : null;
+    const where = file ? `${file}:${Number(h.line) || "?"}` : `${String(h.scope || "text").replace(/[^a-z_]/g, "")} line ${Number(h.line) || "?"}`;
+    const side = ["added", "context", "removed", "header"].includes(h.side) ? `${h.side}, ` : "";
+    const cls = String(h.cls || "").replace(/[^a-z_]/g, "");
+    const masked = /^(?:10\.x\.x\.x|172\.x\.x\.x|192\.x\.x\.x|100\.x\.x\.x|169\.254\.x\.x|x\.x\.x\.x)$/.test(String(h.masked || "")) ? h.masked : "x.x.x.x";
+    return `- ${where} (${side}${cls} ${masked})`;
+  });
+  const label = String(g.label || "").replace(/[^a-z_]/g, "");
+  return [
+    `Previous attempt was BLOCKED by the redaction gate (${label || "diff"}: ipv4); nothing was pushed. Locations (values masked):`,
+    ...(lines.length ? lines : ["- (no location recorded)"]),
+    "Remove or replace those IP literals: read them from config/options, or use 192.0.2.x for examples/tests. If a location is an unavoidable context/removed upstream line, keep the change minimal and say so in summary.",
+    "",
+  ];
+}
+
+export function fixPrompt(job, neoDir, cfg, attempt, previousFailure, continueBranch = "") {
   const repo = cfg.target?.upstream || "(no target)";
   const revise = job.revise && typeof job.revise_feedback === "string";
   return [
@@ -1149,6 +1240,7 @@ function fixPrompt(job, neoDir, cfg, attempt, previousFailure, continueBranch = 
     ...(previousFailure
       ? ["Previous attempt failed the lab test. Evidence (redacted tail):", previousFailure, ""]
       : []),
+    ...gateRetrySection(job),
     ...(revise ? [job.revise_feedback, ""] : []),
     ...(continueBranch
       ? [
@@ -1160,6 +1252,7 @@ function fixPrompt(job, neoDir, cfg, attempt, previousFailure, continueBranch = 
       : []),
     `Create branch fix/<topic> or ops/incident-${job.incident_id} and COMMIT the change (git identity is preset; do not change git config).`,
     "Minimal change. No identifiers. Do NOT push and do NOT open a PR; the worker pushes after its redaction gate.",
+    GATE_HINT,
     'When the commit is ready respond with one JSON object: {"status":"ready_to_push","branch":"fix/…","summary":"…","commit_message":"…"}',
   ].join("\n");
 }
@@ -1250,7 +1343,7 @@ export function gateCommits(cfg, neoDir, baseSha, { branch, prTitle, prBody, slu
     scanOutbound("pr_title", prTitle, slugs);
     scanOutbound("pr_body", prBody, slugs);
   } catch (err) {
-    return { ok: false, result: { status: "redaction_blocked", summary: err.message, hits: err.hits } };
+    return { ok: false, result: { status: "redaction_blocked", summary: err.message, hits: err.hits, ...(err.gate_hits ? { gate_hits: err.gate_hits } : {}) } };
   }
   return { ok: true, files, commits: count, protected: prot };
 }

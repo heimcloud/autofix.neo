@@ -210,6 +210,53 @@ export function getExtraRedactSlugs() {
     .filter(Boolean);
 }
 
+// ------------------------------------------------------------ IPv4 gate
+// Push / PR gate on IPv4 literals. Fail closed on every private, CGNAT,
+// link-local and public address. Narrow allowlist (never identifying):
+//   0.0.0.0 (unspecified, also 0.0.0.0/0), 127.0.0.0/8 (loopback),
+//   192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24 (RFC 5737 documentation).
+// Not an address at all (never a hit): an octet > 255, or a dotted run of
+// more than four numbers (e.g. 1.2.3.4.5). Word boundaries as before (v2.57.46.71
+// is not matched, as with the old \b…\b pattern).
+const IPV4_CANDIDATE = /(?<![\w.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?!\w|\.\d)/g;
+
+/** Pattern class of an IPv4 address (octet array): allowed classes are "loopback" | "unspecified" | "documentation". */
+export function ipv4Class(o) {
+  const [a, b, c] = o;
+  if (o.every((x) => x === 0)) return "unspecified";
+  if (a === 127) return "loopback";
+  if ((a === 192 && b === 0 && c === 2) || (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113)) return "documentation";
+  if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) return "private";
+  if (a === 100 && b >= 64 && b <= 127) return "cgnat";
+  if (a === 169 && b === 254) return "link_local";
+  if (a === 0 || a >= 224) return "reserved";
+  return "public";
+}
+export const IPV4_ALLOWED_CLASSES = new Set(["loopback", "unspecified", "documentation"]);
+
+/** Masked form for display: keeps only what the class already says (10.x.x.x, 192.x.x.x, x.x.x.x). */
+export function maskIpv4(o, cls = ipv4Class(o)) {
+  if (cls === "private") return o[0] === 10 ? "10.x.x.x" : o[0] === 172 ? "172.x.x.x" : "192.x.x.x";
+  if (cls === "cgnat") return "100.x.x.x";
+  if (cls === "link_local") return "169.254.x.x";
+  return "x.x.x.x";
+}
+
+/** IPv4 literals the gate blocks: [{ index, cls, masked }] (never the raw value). */
+export function ipv4GateMatches(text) {
+  const raw = text == null ? "" : String(text);
+  const out = [];
+  IPV4_CANDIDATE.lastIndex = 0;
+  for (const m of raw.matchAll(IPV4_CANDIDATE)) {
+    const o = m.slice(1, 5).map(Number);
+    if (o.some((x) => x > 255)) continue;
+    const cls = ipv4Class(o);
+    if (IPV4_ALLOWED_CLASSES.has(cls)) continue;
+    out.push({ index: m.index, cls, masked: maskIpv4(o, cls) });
+  }
+  return out;
+}
+
 /**
  * Return list of hit descriptions if text still contains identifiers after redaction
  * would leave them (or raw known slugs / slug-shape tokens).
@@ -235,7 +282,7 @@ export function findIdentifierHits(text, opts = {}) {
     re.lastIndex = 0;
     for (const m of raw.match(re) || []) hits.push(`slug_shape:${m.slice(0, 2)}…`);
   }
-  if (/\b(?:\d{1,3}\.){3}\d{1,3}\b/.test(raw)) hits.push("ipv4");
+  if (ipv4GateMatches(raw).length) hits.push("ipv4");
   if (/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test(raw)) hits.push("email");
   if (/\/home\/[A-Za-z0-9._-]+/.test(raw)) hits.push("home_path");
   for (const host of cfg.hostnames) {

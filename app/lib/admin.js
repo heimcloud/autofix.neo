@@ -49,6 +49,7 @@ import {
 import { ingestResultsDir, pushRetryJob } from "./results.js";
 import { labApprovalSource, approveProtectedLab, skipProtectedLab, stickyApproval, protectedRetrySource, revokeLabApproval } from "./lab-approval.js";
 import { startPrLoopValidation } from "./validation.js";
+import { ipv4GateBlock } from "./gate-hits.js";
 import { prOverrideSource, enqueueLabFailedPrJob } from "./pr-override.js";
 import { registerQueueRoutes } from "./admin-queue.js";
 import { workerModel, queueModel } from "./worker-state.js";
@@ -385,7 +386,7 @@ export function createAdminRouter() {
     }
   });
 
-  function enqueueHandler(kind) {
+  function enqueueHandler(kind, { gateRetry = false } = {}) {
     return (req, res) => {
       const base = req.adminBase;
       const json = wantsJson(req);
@@ -396,7 +397,18 @@ export function createAdminRouter() {
       if (!incident) return json ? res.status(404).json({ ok: false, error: "not_found" }) : res.status(404).send("Not found");
       try {
         const resolved = resolveTargetRepo(incident);
-        const { path: jobPath, job } = enqueueJob(kind, incident);
+        // Gate retry: the masked locations come from the DB, never the form.
+        let gate = null;
+        if (gateRetry) {
+          gate = ipv4GateBlock(getLatestIncidentEvent(id, "fix_result")?.meta ?? null);
+          if (!gate) {
+            const e = new Error(`Incident #${id}: the latest fix result is not an IPv4 redaction-gate block; use Start fix.`);
+            e.code = "not_gate_blocked";
+            e.status = 409;
+            throw e;
+          }
+        }
+        const { path: jobPath, job } = enqueueJob(kind, incident, gate ? { gate_retry: gate } : {});
         const patch = { target_repo: incident.target_repo || resolved };
         if (kind === "fix") patch.status = "fixing";
         const updated = updateIncident(id, patch);
@@ -404,12 +416,13 @@ export function createAdminRouter() {
           target_repo: updated.target_repo,
           job_file: jobPath.split("/").pop(),
           job_kind: job.kind,
+          ...(gate ? { gate_retry: true, gate_hits: job.gate_retry?.hits?.length || 0 } : {}),
         });
         const t = kind === "fix" ? getForkPushTokenState() : { known: false };
         const msg =
           t.known && !t.ok
             ? `Fix job enqueued. ${NO_TOKEN_WARNING}`
-            : `${kind === "fix" ? "Fix" : "Triage"} job enqueued`;
+            : `${kind === "fix" ? (gate ? "Fix job (with gate hint)" : "Fix") : "Triage"} job enqueued`;
         if (json) return res.json({ ok: true, message: msg, ...cardPayload(id, base) });
         return res.redirect(303, backTo(req, base, id, "msg", msg));
       } catch (err) {
@@ -422,6 +435,7 @@ export function createAdminRouter() {
   }
 
   router.post("/incidents/:id/start-fix", enqueueHandler("fix"));
+  router.post("/incidents/:id/retry-gate-fix", enqueueHandler("fix", { gateRetry: true }));
 
   // ---- Feature / bug request composer (trusted admin input) ----
   router.get("/request", (req, res) => {

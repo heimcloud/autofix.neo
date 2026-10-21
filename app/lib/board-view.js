@@ -28,6 +28,7 @@ import { liveIndicator, renderRunLine } from "./worker-view.js";
 import { isAutofixKindEnabled } from "./queue.js";
 import { normalizeLabReport } from "./lab-checks.js";
 import { prOverrideView } from "./pr-override.js";
+import { describeGateHits } from "./gate-hits.js";
 
 const esc = (s) => escapeHtml(s == null ? "" : s);
 
@@ -72,6 +73,7 @@ export function buildCardModel(incident, events, attempts, redact, opts = {}) {
     ...(r.detail ? { detail: truncate(redact(r.detail), 400) } : {}),
     ...(r.protected ? { protected: { label: redact(r.protected.label), core: r.protected.core === true } } : {}),
     ...(r.untested ? { untested: true } : {}),
+    ...(r.gate ? { gateWhere: redact(r.gate.hits.length ? `IPv4 (${r.gate.label}) at ${describeGateHits(r.gate.hits, 1)}` : `IPv4 (${r.gate.label}); location not recorded`) } : {}),
   }));
   const compareUrl = safeLink(incident.compare_url, redact);
   const summaryFull = redact(incidentSummary(incident, events));
@@ -306,6 +308,11 @@ function actionForm(base, card, action, caps, { compact = false } = {}) {
     path += "/start-fix";
     hidden = "";
     confirm = `Enqueue a fix job for incident #${id}? (local Hermes, fork branch, compare link; no auto-merge)`;
+  } else if (action === "retry_gate_fix") {
+    if (!caps.fix) return "";
+    path += "/retry-gate-fix";
+    hidden = "";
+    confirm = `Retry the fix for incident #${id} with the redaction-gate hint? Hermes gets the masked locations and is told to read IPs from config or use 192.0.2.x (no auto-merge).`;
   } else if (action === "retry_lab") {
     if (!caps.lab) return "";
     path += "/retry-lab";
@@ -449,7 +456,7 @@ export function renderCard(card, base, caps, { hidden = false } = {}) {
     </div>
     ${
       top
-        ? `<div class="kc-need" title="${esc(card.reasons.map((r) => r.label).join(" · "))}">${ICONS.alert}<span>${esc(top.label)}</span></div>`
+        ? `<div class="kc-need" title="${esc(card.reasons.map((r) => r.label).join(" · "))}">${ICONS.alert}<span>${esc(top.label)}</span></div>${top.gateWhere ? `<p class="kc-gate">${esc(top.gateWhere)}</p>` : ""}`
         : ""
     }
     ${card.protectedLab?.core ? `<div class="kc-warn" title="The fix touches the base system of the shared ops/lab host">BASE SYSTEM change: lab test needs your approval</div>` : ""}

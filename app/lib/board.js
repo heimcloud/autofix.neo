@@ -3,6 +3,7 @@
  * transition table, human-input derivation, filters, display redaction,
  * local-time formatting (tz.js). Rendering lives in board-view.js.
  */
+import { ipv4GateBlock, describeGateHits, GATE_RETRY_HINT } from "./gate-hits.js";
 import { redactIdentifyingDetails } from "./redact.js";
 import { TIME_ZONE } from "./tz.js";
 import { pushRetryJob } from "./results.js";
@@ -92,6 +93,7 @@ export function checkTransition(from, to) {
 export const ACTIONS = {
   start_triage: "Start triage",
   start_fix: "Start fix",
+  retry_gate_fix: "Retry fix with gate hint",
   retry_push: "Retry push",
   retry_lab: "Retry lab test",
   rerun_lab: "Rerun lab test",
@@ -409,7 +411,16 @@ export function needsHumanInput(incident, events = [], attempts = [], opts = {})
       } else if (fm && (["ready_no_token", "push_failed"].includes(fm.status) || job)) {
         reasons.push(pushReason({ ...fm, status: fm.status === "ready_no_token" ? "ready_no_token" : "push_failed" }, job));
       } else if (fm?.status === "redaction_blocked") {
-        reasons.push(reason("redaction_blocked", "Redaction gate blocked the push", ["start_fix", "close"], fm.summary));
+        // IPv4 gate block: masked file:line + the retry-with-hint action
+        // (offered, never started on its own).
+        const g = ipv4GateBlock(fm);
+        if (g) {
+          const where = g.hits.length ? describeGateHits(g.hits) : "location not recorded (blocked before v0.3.8)";
+          const ctx = g.hits.length && g.hits.every((h) => h.side === "context" || h.side === "removed");
+          const r = reason("redaction_blocked", "Redaction gate blocked the push", ["retry_gate_fix", "start_fix", "close"], `IPv4 in ${g.label}: ${where}.${ctx ? " Only upstream context/removed lines matched; a retry may need a different edit spot." : ""} ${GATE_RETRY_HINT}`);
+          r.gate = g;
+          reasons.push(r);
+        } else reasons.push(reason("redaction_blocked", "Redaction gate blocked the push", ["start_fix", "close"], fm.summary));
       } else if (fm?.status === "denied") {
         // Legacy results (before protected paths got the approval flow).
         reasons.push(reason("denied", "Diff touches a deny-listed path", ["start_fix", "close"], fm.summary));
